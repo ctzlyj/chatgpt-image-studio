@@ -103,3 +103,30 @@ test('lost submit receipt survives page reload without duplicate submission', as
   await expect(page.locator('.card-prompt').first()).toHaveText('receipt-recovery-fixture');
   expect(submissions).toBe(1);
 });
+
+test('connection accepts a pasted whole multiline session JSON without storing profile data in browser', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '已配置连接' }).click();
+  const input = page.getByLabel('网页登录凭证', { exact: true });
+  await expect(input).toHaveAttribute('type', 'password');
+  const session = JSON.stringify({ user: { name: 'PRIVATE_BROWSER_FIXTURE', email: 'fixture@example.test' }, expires: '2099-01-01', accessToken: 'synthetic-browser-session-fixture' }, null, 2);
+  await input.evaluate((element, text) => {
+    const transfer = new DataTransfer();
+    transfer.setData('text/plain', text);
+    element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }));
+  }, session);
+  const savedResponse = page.waitForResponse(response => response.url().endsWith('/api/settings') && response.request().method() === 'POST');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  const response = await savedResponse;
+  expect(response.request().postDataJSON().access_token).toBe(session);
+  expect(response.status()).toBe(200);
+  expect(await response.text()).not.toContain('synthetic-browser-session-fixture');
+  await expect(input).toHaveValue('');
+  await expect(page.locator('.settings-message')).toContainText('已保存');
+  const browserStorage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
+  expect(browserStorage).not.toContain('PRIVATE_BROWSER_FIXTURE');
+  expect(browserStorage).not.toContain('synthetic-browser-session-fixture');
+  await page.reload();
+  await page.getByRole('button', { name: '已配置连接' }).click();
+  await expect(page.getByLabel('网页登录凭证', { exact: true })).toHaveValue('');
+});

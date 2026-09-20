@@ -18,6 +18,37 @@ class SettingsUpdate(BaseModel):
     clear_token: bool = False
 
 
+def parse_access_token(value: str) -> str:
+    if len(value) > 262144:
+        raise ValueError('粘贴内容过长，请从 ChatGPT 会话信息页重新全选复制 JSON')
+    credential = value.strip()
+    if not credential:
+        return ''
+    if credential.startswith(('{', '[', '"')) or credential in {'null', 'true', 'false'}:
+        try:
+            session = json.loads(credential)
+        except (ValueError, RecursionError):
+            raise ValueError('会话 JSON 不完整或格式不正确，请从会话信息页重新全选复制') from None
+        if not isinstance(session, dict):
+            raise ValueError('需要完整的会话 JSON 对象，请从 ChatGPT 会话信息页重新全选复制')
+        candidates = [session[key] for key in ('accessToken', 'access_token') if key in session]
+        if not candidates or any(not isinstance(candidate, str) for candidate in candidates):
+            raise ValueError('会话 JSON 中没有有效登录凭证，请先登录 ChatGPT，再重新复制整个 JSON')
+    else:
+        candidates = [credential]
+    tokens = []
+    for candidate in candidates:
+        token = candidate.strip()
+        if token[:7].lower() == 'bearer ':
+            token = token[7:].strip()
+        if not token or token.lower() == 'bearer' or len(token) > 20000 or any(character.isspace() for character in token):
+            raise ValueError('登录凭证无效，请先登录 ChatGPT，再从会话信息页重新全选复制 JSON')
+        tokens.append(token)
+    if len(set(tokens)) != 1:
+        raise ValueError('会话 JSON 中的登录凭证不一致，请从会话信息页重新全选复制')
+    return tokens[0]
+
+
 class Blob(ctypes.Structure):
     _fields_ = [('size', ctypes.c_ulong), ('data', ctypes.POINTER(ctypes.c_char))]
 
@@ -87,11 +118,7 @@ class Settings:
         with self.lock:
             next_values = dict(self.values)
             if request.access_token is not None:
-                token = request.access_token.get_secret_value().strip()
-                if token.startswith('Bearer '):
-                    token = token[7:]
-                if token and (len(token) > 20000 or any(character.isspace() for character in token)):
-                    raise ValueError('请只填写 accessToken 的值，不要粘贴整个会话 JSON')
+                token = parse_access_token(request.access_token.get_secret_value())
                 if token:
                     next_values['access_token'] = token
             if request.clear_token:
