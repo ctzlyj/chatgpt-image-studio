@@ -5,11 +5,20 @@ import time
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Dict, Iterator, Optional
+from urllib.parse import urlsplit
 from curl_cffi import requests
 from PIL import Image
 from .helper import ensure_ok, iter_sse_payloads, new_uuid, logger
 from .pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
 from .turnstile import solve_turnstile_token
+
+MAX_IMAGE_BYTES = 40 * 1024 * 1024
+
+
+def validate_asset_url(url: str) -> None:
+    parsed = urlsplit(url)
+    if parsed.scheme != 'https' or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+        raise RuntimeError('网页返回了不安全的图片传输地址，已停止本次传输')
 
 class InvalidAccessTokenError(RuntimeError):
     pass
@@ -47,10 +56,17 @@ class OpenAIBackendAPI:
         self.session_id = self.fp['oai-session-id']
         self.pow_script_sources: list[str] = []
         self.pow_data_build = ''
-        self.session = requests.Session(impersonate=self.fp['impersonate'], verify=True, proxy=proxy or None)
+        self.session = requests.Session(impersonate=self.fp['impersonate'], verify=True, proxy=proxy or None, allow_redirects=False)
+        self.asset_session = requests.Session(impersonate=self.fp['impersonate'], verify=True, proxy=proxy or None, allow_redirects=False)
         self.session.headers.update({'User-Agent': self.user_agent, 'Origin': self.base_url, 'Referer': self.base_url + '/', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7', 'Cache-Control': 'no-cache', 'Pragma': 'no-cache', 'Priority': 'u=1, i', 'Sec-Ch-Ua': self.fp['sec-ch-ua'], 'Sec-Ch-Ua-Arch': '"x86"', 'Sec-Ch-Ua-Bitness': '"64"', 'Sec-Ch-Ua-Full-Version': '"143.0.3650.96"', 'Sec-Ch-Ua-Full-Version-List': '"Microsoft Edge";v="143.0.3650.96", "Chromium";v="143.0.7499.147", "Not A(Brand";v="24.0.0.0"', 'Sec-Ch-Ua-Mobile': self.fp['sec-ch-ua-mobile'], 'Sec-Ch-Ua-Model': '""', 'Sec-Ch-Ua-Platform': self.fp['sec-ch-ua-platform'], 'Sec-Ch-Ua-Platform-Version': '"19.0.0"', 'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Site': 'same-origin', 'OAI-Device-Id': self.device_id, 'OAI-Session-Id': self.session_id, 'OAI-Language': 'zh-CN', 'OAI-Client-Version': self.client_version, 'OAI-Client-Build-Number': self.client_build_number})
         if self.access_token:
             self.session.headers['Authorization'] = f'Bearer {self.access_token}'
+
+    def close(self):
+        try:
+            self.session.close()
+        finally:
+            self.asset_session.close()
 
     def _build_fp(self) -> Dict[str, str]:
         fp = {}
@@ -132,9 +148,13 @@ class OpenAIBackendAPI:
         response = self.session.post(self.base_url + path, headers=self._headers(path, {'Content-Type': 'application/json', 'Accept': 'application/json'}), json={'file_name': file_name, 'file_size': len(data), 'use_case': 'multimodal', 'width': width, 'height': height}, timeout=60)
         ensure_ok(response, path)
         upload_meta = response.json()
+        validate_asset_url(upload_meta['upload_url'])
         time.sleep(0.5)
-        response = self.session.put(upload_meta['upload_url'], headers={'Content-Type': mime_type, 'x-ms-blob-type': 'BlockBlob', 'x-ms-version': '2020-04-08', 'Origin': self.base_url, 'Referer': self.base_url + '/', 'User-Agent': self.user_agent, 'Accept': 'application/json, text/plain, */*', 'Accept-Language': 'en-US,en;q=0.8'}, data=data, timeout=120)
-        ensure_ok(response, 'image_upload')
+        response = self.asset_session.put(upload_meta['upload_url'], headers={'Content-Type': mime_type, 'x-ms-blob-type': 'BlockBlob', 'x-ms-version': '2020-04-08', 'Origin': self.base_url, 'Referer': self.base_url + '/', 'User-Agent': self.user_agent, 'Accept': 'application/json, text/plain, */*', 'Accept-Language': 'en-US,en;q=0.8'}, data=data, timeout=120, discard_cookies=True)
+        try:
+            ensure_ok(response, 'image_upload')
+        finally:
+            response.close()
         path = f"/backend-api/files/{upload_meta['file_id']}/uploaded"
         response = self.session.post(self.base_url + path, headers=self._headers(path, {'Content-Type': 'application/json', 'Accept': 'application/json'}), data='{}', timeout=60)
         ensure_ok(response, path)
@@ -281,9 +301,23 @@ class OpenAIBackendAPI:
     def download_image_bytes(self, urls: list[str]) -> list[bytes]:
         images = []
         for url in urls:
-            response = self.session.get(url, timeout=120)
-            ensure_ok(response, 'image_download')
-            images.append(response.content)
+            validate_asset_url(url)
+            response = self.asset_session.get(url, timeout=120, stream=True, discard_cookies=True)
+            try:
+                ensure_ok(response, 'image_download')
+                declared_size = response.headers.get('content-length', '')
+                if declared_size.isdigit() and int(declared_size) > MAX_IMAGE_BYTES:
+                    raise RuntimeError('网页返回图片超过本地 40 MB 限制')
+                chunks = []
+                received = 0
+                for chunk in response.iter_content(chunk_size=65536):
+                    received += len(chunk)
+                    if received > MAX_IMAGE_BYTES:
+                        raise RuntimeError('网页返回图片超过本地 40 MB 限制')
+                    chunks.append(chunk)
+                images.append(b''.join(chunks))
+            finally:
+                response.close()
         return images
 
     def _stream_picture_conversation(self, prompt: str, model: str, images: list[str]) -> Iterator[str]:

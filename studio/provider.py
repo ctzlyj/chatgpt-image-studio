@@ -3,7 +3,6 @@ import json
 import re
 
 from .upstream.backend import OpenAIBackendAPI
-from .upstream.helper import ensure_ok
 
 
 class WebImageProvider:
@@ -22,7 +21,7 @@ class WebImageProvider:
             backend._get_me()
             return {'ok': True, 'message': '网页登录有效；此检查不生成图片，也不能证明实际图像模型版本'}
         finally:
-            backend.session.close()
+            backend.close()
 
     def generate(self, prompt, references, model, progress):
         backend = self.connect()
@@ -63,16 +62,9 @@ class WebImageProvider:
             if not urls:
                 raise RuntimeError('网页任务没有返回可下载图片，结果可能仍在处理中，请先在网页核对')
             progress('保存图片到本机')
-            images = []
-            for url in urls:
-                response = backend.session.get(url, timeout=120)
-                ensure_ok(response, 'image_download')
-                if len(response.content) > 40 * 1024 * 1024:
-                    raise RuntimeError('网页返回图片超过本地 40 MB 限制')
-                images.append(response.content)
-            return images
+            return backend.download_image_bytes(urls)
         finally:
-            backend.session.close()
+            backend.close()
 
 
 def public_error(error):
