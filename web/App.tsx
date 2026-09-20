@@ -25,7 +25,7 @@ export function App() {
   const [preview, setPreview] = useState<string[] | null>(null);
   const [lightbox, setLightbox] = useState<Asset | null>(null);
   const [original, setOriginal] = useState(false);
-  const [pendingId, setPendingId] = useState('');
+  const [pendingId, setPendingId] = useState(() => localStorage.getItem('canvas-pending-id') || '');
   const fileInput = useRef<HTMLInputElement>(null);
   const commonInput = useRef<HTMLInputElement>(null);
   const promptInput = useRef<HTMLTextAreaElement>(null);
@@ -43,6 +43,7 @@ export function App() {
 
   useEffect(() => { bootstrap().then(async result => { setSettings(result); await refresh(); }).catch(fail); }, []);
   useEffect(() => { localStorage.setItem('canvas-draft', JSON.stringify(draft)); }, [draft]);
+  useEffect(() => { if (pendingId) localStorage.setItem('canvas-pending-id', pendingId); else localStorage.removeItem('canvas-pending-id'); }, [pendingId]);
   useEffect(() => {
     if (!settings) return;
     const timer = setInterval(() => { if (document.visibilityState === 'visible') refresh().catch(() => {}); }, 2000);
@@ -76,15 +77,17 @@ export function App() {
     if (!settings?.configured) { setShowSettings(true); return; }
     setError(''); setBusy(true);
     const clientId = crypto.randomUUID();
+    localStorage.setItem('canvas-pending-id', clientId);
+    setPendingId(clientId);
     try {
       const batch = await api<Batch>('/api/batches', { ...draft, client_id: clientId });
       setSelected(batch.id); setPendingId(''); await refresh();
       setToast(`${batch.tasks.length} 个任务已接收，关闭页面不影响后台处理`);
     } catch (reason) {
-      if (reason instanceof ApiError && reason.status >= 400 && reason.status < 500) { fail(reason); return; }
+      if (reason instanceof ApiError && reason.status >= 400 && reason.status < 500) { setPendingId(''); fail(reason); return; }
       try {
         const batch = await api<Batch>(`/api/batches/${clientId}`);
-        setSelected(batch.id); await refresh(); setToast('已查到接收回执，没有重复提交');
+        setSelected(batch.id); setPendingId(''); await refresh(); setToast('已查到接收回执，没有重复提交');
       } catch { setPendingId(clientId); fail(reason); }
     } finally { setBusy(false); }
   }
@@ -103,6 +106,14 @@ export function App() {
     setAssets(values => ({ ...values, [image.id]: image }));
     setDraft({ ...initialDraft, references: [image.id], derivative: true, custom_size: current?.request.custom_size ?? null, image_size: current?.request.image_size ?? '2K' });
     setLightbox(null); promptInput.current?.focus(); setToast('来源图已放入编辑区，请填写修改要求');
+  }
+
+  function addReference(image: Asset) {
+    if (draft.references.includes(image.id)) { setToast('这张图片已在参考图中'); return; }
+    if (draft.references.length >= (draft.mode === 'per-image' ? 10 : 12)) { setError('参考图已达当前模式上限，请先移除一张图片'); return; }
+    setAssets(values => ({ ...values, [image.id]: image }));
+    patch({ references: [...draft.references, image.id] });
+    setToast('已加入参考图');
   }
 
   function referenceArea(common = false) {
@@ -147,7 +158,7 @@ export function App() {
         {batches.length > 0 && <div className="history-strip" aria-label="历史批次">{batches.map(batch => <button key={batch.id} className={current?.id === batch.id ? 'active' : ''} onClick={() => setSelected(batch.id)}><span>{new Date(batch.created * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span><strong>{batch.request.prompt.slice(0, 14) || '图片任务'}</strong><small>{batch.tasks.filter(task => task.status === 'success').length}/{batch.tasks.length} 张 {active(batch) && '· 处理中'}</small></button>)}</div>}
         {current ? <><div className="batch-toolbar"><span>{current.tasks.length} 个独立任务 · 结果实时保存</span><div><button onClick={() => { setDraft({ ...initialDraft, ...current.request }); setToast('已恢复本批提示词、参考图及画布设置'); }}>恢复设置</button><button onClick={() => setPreview(current.tasks.map(task => task.effective_prompt))}>查看提示词</button>{active(current) ? <button onClick={() => api(`/api/batches/${current.id}/cancel`, {}).then(refresh).catch(fail)}><Square size={12}/>取消未开始</button> : <button aria-label="删除此批历史" onClick={() => { if (confirm('只删除此批历史记录，图片文件仍保留在本地。确定删除？')) api(`/api/batches/${current.id}`, undefined, 'DELETE').then(refresh).catch(fail); }}><Trash2 size={14}/></button>}</div></div>
           <div className="result-grid">{current.tasks.map(task => <article className={`result-card ${task.status}`} key={task.id}><div className="card-meta"><span>作品 {String(task.index + 1).padStart(2, '0')}</span><span className={`status ${task.status}`}>{labels[task.status]}</span></div>
-            {task.results.length ? task.results.map(image => <div key={image.id}><button className="image-button" onClick={() => { setLightbox(image); setOriginal(false); }}><img src={image.url} alt={task.prompt}/><span><Maximize2 size={17}/> 查看大图</span></button><div className="image-meta"><span>{image.width} × {image.height}</span><span>PNG · {(image.bytes / 1024 / 1024).toFixed(1)} MB</span></div><div className="card-actions"><button onClick={() => editImage(image)}><Sparkles size={14}/>继续修改</button><button onClick={() => { patch({ references: [...draft.references, image.id].slice(0, 12) }); setToast('已加入参考图'); }}><Plus size={14}/>作参考</button><button aria-label={`下载作品 ${task.index + 1}`} onClick={() => download(image.url, `画间-${task.index + 1}.png`).catch(fail)}><ArrowDownToLine size={16}/></button></div></div>) : <div className="task-placeholder">{['queued', 'running'].includes(task.status) ? <><LoaderCircle className={task.status === 'running' ? 'spin' : ''} size={28}/><strong>{task.stage}</strong><span>无需保持页面打开</span></> : <><CircleHelp size={28}/><strong>{task.stage}</strong><p>{task.error || '此任务未生成图片'}</p><button onClick={() => { setDraft({ ...initialDraft, ...current.request, prompt: task.prompt, mode: 'count', count: 1 }); setToast('已载入要求。请核对网页后再点击生成，不会自动重试。'); }}>载入要求，手动重试</button></>}</div>}
+            {task.results.length ? task.results.map(image => <div key={image.id}><button className="image-button" onClick={() => { setLightbox(image); setOriginal(false); }}><img src={image.url} alt={task.prompt}/><span><Maximize2 size={17}/> 查看大图</span></button><div className="image-meta"><span>{image.width} × {image.height}</span><span>PNG · {(image.bytes / 1024 / 1024).toFixed(1)} MB</span></div><div className="card-actions"><button onClick={() => editImage(image)}><Sparkles size={14}/>继续修改</button><button onClick={() => addReference(image)}><Plus size={14}/>作参考</button><button aria-label={`下载作品 ${task.index + 1}`} onClick={() => download(image.url, `画间-${task.index + 1}.png`).catch(fail)}><ArrowDownToLine size={16}/></button></div></div>) : <div className="task-placeholder">{['queued', 'running'].includes(task.status) ? <><LoaderCircle className={task.status === 'running' ? 'spin' : ''} size={28}/><strong>{task.stage}</strong><span>无需保持页面打开</span></> : <><CircleHelp size={28}/><strong>{task.stage}</strong><p>{task.error || '此任务未生成图片'}</p><button onClick={() => { setDraft({ ...initialDraft, ...current.request, prompt: task.prompt, mode: 'count', count: 1 }); setToast('已载入要求。请核对网页后再点击生成，不会自动重试。'); }}>载入要求，手动重试</button></>}</div>}
             <p className="card-prompt" title={task.prompt}>{task.prompt}</p></article>)}</div></>
           : <div className="empty-workspace"><div className="empty-art"><div/><div/><div><Images size={46} strokeWidth={1}/></div></div><h3>第一张作品，从一句话开始</h3><p>输入提示词，也可以带上你的商品参考图。<br/>生成的图片、修改版本和任务记录，都保存在这里。</p><div className="empty-features"><span><Check size={14}/>自由提示词</span><span><Check size={14}/>多图参考</span><span><Check size={14}/>本地历史</span></div></div>}
         <footer className="workspace-footer"><span>本地单账号队列 · 不自动重试未知结果</span><span>网页接口可能变化，账号额度与平台规则仍然适用</span></footer>

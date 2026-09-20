@@ -49,6 +49,7 @@ def create_app(data_dir=None, provider_factory=WebImageProvider):
     async def lifespan(_app):
         yield
         await run_in_threadpool(service.close)
+        store.connection.close()
 
     app = FastAPI(title='ChatGPT Image Studio', version='0.1.0', lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store

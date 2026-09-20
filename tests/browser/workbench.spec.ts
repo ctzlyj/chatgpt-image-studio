@@ -75,3 +75,31 @@ test('file and clipboard references, per-image mode, settings and mobile layout'
   await page.getByRole('button', { name: '关闭连接设置' }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });
+
+test('lost submit receipt survives page reload without duplicate submission', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('你的提示词').fill('receipt-recovery-fixture');
+  let submissions = 0;
+  await page.route('**/api/batches**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'POST' && path === '/api/batches') {
+      submissions++;
+      await route.fetch();
+      await route.abort();
+    } else if (path.startsWith('/api/batches/')) {
+      await route.abort();
+    } else { await route.continue(); }
+  });
+  await page.getByRole('button', { name: '开始生成' }).click();
+  await expect(page.locator('.pending-notice')).toBeVisible();
+  await expect(page.getByRole('alert')).toBeVisible();
+  await page.unroute('**/api/batches**');
+  await page.reload();
+  await expect(page.locator('.pending-notice')).toBeVisible();
+  await expect(page.getByRole('button', { name: '开始生成' })).toBeDisabled();
+  await page.getByRole('button', { name: '查询回执' }).click();
+  await expect(page.locator('.pending-notice')).toHaveCount(0);
+  await expect(page.locator('.card-prompt').first()).toHaveText('receipt-recovery-fixture');
+  expect(submissions).toBe(1);
+});

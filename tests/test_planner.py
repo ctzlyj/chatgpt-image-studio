@@ -70,3 +70,10 @@ def test_reference_budget_and_missing_references():
         plan(request(references=['unknown']), {})
     with pytest.raises(ValueError):
         plan(request(references=['large']), {'large': {'bytes': 16 * 1024 * 1024}})
+
+
+def test_common_references_cannot_be_hidden_in_shared_mode():
+    with pytest.raises(ValueError):
+        plan(request(common_references=['common']), {'common': {'bytes': 20}})
+    with pytest.raises(ValueError):
+        plan(request(mode='per-image', references=['source'], common_references=['common']), {'source': {'bytes': 20}, 'common': {'bytes': 7 * 1024 * 1024}})
