@@ -102,6 +102,101 @@ def test_web_adapter_does_not_read_arbitrary_local_paths(tmp_path):
         backend._decode_image_base64(str(private))
 
 
+def modern_image_conversation(role='tool', metadata=None):
+    return {'mapping': {'output': {'message': {
+        'author': {'role': role}, 'status': 'finished_successfully',
+        'metadata': {'image_gen_title': 'Synthetic product image'} if metadata is None else metadata,
+        'content': {'content_type': 'multimodal_text', 'parts': [
+            {'content_type': 'image_asset_pointer', 'asset_pointer': 'sediment://file_fixture', 'width': 512, 'height': 640}
+        ]}
+    }}}}
+
+
+def test_image_record_accepts_current_title_marker_without_legacy_async_field():
+    from studio.upstream.backend import OpenAIBackendAPI
+    backend = object.__new__(OpenAIBackendAPI)
+    records = backend._extract_image_tool_records(modern_image_conversation())
+    assert len(records) == 1
+    assert records[0]['sediment_ids'] == ['file_fixture']
+
+
+@pytest.mark.parametrize('role,metadata', [
+    ('user', {'image_gen_title': 'Synthetic input'}),
+    ('assistant', {'image_gen_title': 'Synthetic echo'}),
+    ('tool', {}),
+    ('tool', {'image_gen_title': ''}),
+    ('tool', {'image_gen_title': 'Synthetic error', 'is_error': True}),
+])
+def test_reference_echo_and_unrelated_tool_are_not_generated_images(role, metadata):
+    from studio.upstream.backend import OpenAIBackendAPI
+    backend = object.__new__(OpenAIBackendAPI)
+    assert backend._extract_image_tool_records(modern_image_conversation(role, metadata)) == []
+
+
+@pytest.mark.parametrize('metadata', [{'tool_invoked': False}, {'turn_use_case': 'text'}, {'tool_invoked': False, 'turn_use_case': 'text'}])
+@pytest.mark.parametrize('download_url', ['https://example.test/generated.png', 'https://chatgpt.com/backend-api/estuary/content?id=synthetic-file'])
+def test_advisory_text_metadata_does_not_discard_completed_image(tmp_path, metadata, download_url):
+    settings = Settings(tmp_path)
+    settings.update(SettingsUpdate(access_token='offline-test-placeholder'))
+    transport, assets = FakeSession(), FakeSession()
+    original_post, original_get = transport.post, transport.get
+    def post(url, **kwargs):
+        response = original_post(url, **kwargs)
+        if url.endswith('/f/conversation'):
+            response.lines.insert(1, b'data: ' + json.dumps({'type': 'server_ste_metadata', 'metadata': metadata}).encode())
+        return response
+    def get(url, **kwargs):
+        response = original_get(url, **kwargs)
+        if url.endswith('/conversation/conversation-fixture'):
+            response.payload = modern_image_conversation()
+        elif url.endswith('/attachment/file_fixture/download'):
+            response.payload = {'download_url': download_url}
+        return response
+    with patch('studio.upstream.backend.requests.Session', side_effect=[transport, assets]), patch.object(transport, 'post', side_effect=post), patch.object(transport, 'get', side_effect=get), patch('studio.upstream.backend.build_legacy_requirements_token', return_value='synthetic-proof'):
+        result = WebImageProvider(settings).generate('exact user prompt', [], 'fixture-web-model', lambda stage: None)
+    assert result == [fixture_image()]
+    assert sum(url.endswith('/f/conversation') for _, url, _ in transport.calls) == 1
+    assert any(url.endswith('/attachment/file_fixture/download') for _, url, _ in transport.calls)
+    expected_download_session = transport if download_url.startswith('https://chatgpt.com/') else assets
+    assert any(url == download_url for _, url, _ in expected_download_session.calls)
+    assert not assets.headers
+    assert transport.closed and assets.closed
+
+
+def test_explicit_moderation_is_sticky_and_does_not_download(tmp_path):
+    settings = Settings(tmp_path)
+    settings.update(SettingsUpdate(access_token='offline-test-placeholder'))
+    events = [json.dumps({'conversation_id': 'conversation-fixture'}),
+              json.dumps({'type': 'moderation', 'moderation_response': {'blocked': True}}),
+              json.dumps({'type': 'moderation', 'moderation_response': {'blocked': False}}), '[DONE]']
+    with patch('studio.provider.OpenAIBackendAPI') as factory:
+        backend = factory.return_value
+        backend._stream_picture_conversation.return_value = iter(events)
+        with pytest.raises(RuntimeError, match='审核'):
+            WebImageProvider(settings).generate('synthetic prompt', [], 'fixture-web-model', lambda stage: None)
+        backend.resolve_conversation_image_urls.assert_not_called()
+        backend.download_image_bytes.assert_not_called()
+        backend.close.assert_called_once()
+
+
+@pytest.mark.parametrize('message,expected', [
+    ('非常抱歉，生成的图片可能违反了我们的内容政策。', '审核'),
+    ('PRIVATE_ERROR_FIXTURE with account-specific details', '错误'),
+])
+def test_finished_web_error_stops_polling_without_echoing_response(message, expected):
+    from studio.upstream.backend import OpenAIBackendAPI
+    backend = object.__new__(OpenAIBackendAPI)
+    conversation = {'mapping': {'failure': {'message': {
+        'author': {'role': 'assistant'}, 'status': 'finished_successfully', 'metadata': {'is_error': True},
+        'content': {'content_type': 'text', 'parts': [message]}
+    }}}}
+    with patch.object(backend, '_get_conversation', return_value=conversation), patch('studio.upstream.backend.time.sleep') as sleep:
+        with pytest.raises(RuntimeError, match=expected) as failure:
+            backend._poll_image_results('conversation-fixture', 0.01)
+        assert 'PRIVATE_ERROR_FIXTURE' not in str(failure.value)
+        sleep.assert_not_called()
+
+
 @pytest.mark.parametrize('url', ['http://example.test/image', 'file:///image.png', 'https://name:password@example.test/image', 'https:///image'])
 def test_unsafe_asset_urls_are_rejected(url):
     from studio.upstream.backend import validate_asset_url
@@ -121,6 +216,67 @@ def test_image_size_is_bounded_and_response_closed(declared_size):
         with pytest.raises(RuntimeError, match='40 MB'):
             backend.download_image_bytes(['https://example.test/image'])
     assert response.closed
+
+
+@pytest.mark.parametrize('authority', ['chatgpt.com', 'chatgpt.com:443'])
+def test_first_party_estuary_download_uses_authenticated_session(authority):
+    from studio.upstream.backend import OpenAIBackendAPI
+    transport, assets = FakeSession(), FakeSession()
+    with patch('studio.upstream.backend.requests.Session', side_effect=[transport, assets]):
+        backend = OpenAIBackendAPI(access_token='synthetic-fixture')
+    url = f'https://{authority}/backend-api/estuary/content?id=synthetic-file'
+    try:
+        assert backend.download_image_bytes([url]) == [fixture_image()]
+    finally:
+        backend.close()
+    assert len(transport.calls) == 1
+    assert not assets.calls
+    options = transport.calls[0][2]
+    assert options['headers']['Authorization'] == 'Bearer synthetic-fixture'
+    assert options['headers']['X-OpenAI-Target-Path'] == '/backend-api/estuary/content'
+    assert options['allow_redirects'] is False
+
+
+@pytest.mark.parametrize('url', [
+    'https://example.test/image.png',
+    'https://chatgpt.com.example.test/backend-api/estuary/content',
+    'https://chatgpt.com:444/backend-api/estuary/content',
+    'https://chatgpt.com/unrelated',
+])
+def test_other_download_origins_and_routes_never_receive_login(url):
+    from studio.upstream.backend import OpenAIBackendAPI
+    transport, assets = FakeSession(), FakeSession()
+    with patch('studio.upstream.backend.requests.Session', side_effect=[transport, assets]):
+        backend = OpenAIBackendAPI(access_token='synthetic-fixture')
+    try:
+        assert backend.download_image_bytes([url]) == [fixture_image()]
+    finally:
+        backend.close()
+    assert not transport.calls
+    assert len(assets.calls) == 1
+    assert not assets.headers
+    assert not assets.calls[0][2].get('headers')
+    assert assets.calls[0][2]['discard_cookies'] is True
+
+
+def test_first_party_download_refuses_redirect_and_closes_response():
+    from studio.upstream.backend import OpenAIBackendAPI
+    transport, assets = FakeSession(), FakeSession()
+    response = FakeResponse()
+    response.status_code = 302
+    response.headers = {'location': 'https://example.test/unexpected-target'}
+    with patch('studio.upstream.backend.requests.Session', side_effect=[transport, assets]):
+        backend = OpenAIBackendAPI(access_token='synthetic-fixture')
+    try:
+        with patch.object(transport, 'get', return_value=response) as download:
+            with pytest.raises(RuntimeError, match='HTTP 302'):
+                backend.download_image_bytes(['https://chatgpt.com/backend-api/estuary/content?id=synthetic-file'])
+            assert download.call_args.kwargs['allow_redirects'] is False
+            assert download.call_count == 1
+    finally:
+        backend.close()
+    assert response.closed
+    assert not assets.calls
 
 
 def test_failed_login_check_closes_both_sessions(tmp_path):

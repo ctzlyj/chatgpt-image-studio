@@ -195,7 +195,10 @@ class OpenAIBackendAPI:
             content = message.get('content') or {}
             if author.get('role') != 'tool':
                 continue
-            if metadata.get('async_task_type') != 'image_gen':
+            if metadata.get('is_error') is True:
+                continue
+            image_title = metadata.get('image_gen_title')
+            if metadata.get('async_task_type') != 'image_gen' and not (isinstance(image_title, str) and image_title.strip()):
                 continue
             if content.get('content_type') != 'multimodal_text':
                 continue
@@ -234,6 +237,17 @@ class OpenAIBackendAPI:
             if sediment_ids:
                 logger.info({'event': 'image_poll_hit', 'conversation_id': conversation_id, 'file_ids': [], 'sediment_ids': sediment_ids})
                 return ([], sediment_ids)
+            for node in (conversation.get('mapping') or {}).values():
+                message = (node or {}).get('message') or {}
+                if (message.get('author') or {}).get('role') not in {'assistant', 'tool'}:
+                    continue
+                if (message.get('metadata') or {}).get('is_error') is not True:
+                    continue
+                parts = (message.get('content') or {}).get('parts') or []
+                text = ' '.join(part for part in parts if isinstance(part, str)).lower()
+                if any(phrase in text for phrase in ('content policy', '内容政策', '内容安全')):
+                    raise RuntimeError('网页返回内容审核提示，未找到生成图片；该提示不证明素材违规，请在网页核对或反馈误判')
+                raise RuntimeError('网页生图返回错误，未找到生成图片；请核对网页任务，不能仅凭该回执确定失败原因')
             logger.debug({'event': 'image_poll_wait', 'conversation_id': conversation_id, 'elapsed_secs': round(time.time() - start, 1)})
             time.sleep(4)
         logger.info({'event': 'image_poll_timeout', 'conversation_id': conversation_id, 'timeout_secs': timeout_secs})
@@ -302,7 +316,11 @@ class OpenAIBackendAPI:
         images = []
         for url in urls:
             validate_asset_url(url)
-            response = self.asset_session.get(url, timeout=120, stream=True, discard_cookies=True)
+            parsed = urlsplit(url)
+            if parsed.hostname == 'chatgpt.com' and parsed.port in {None, 443} and parsed.path == '/backend-api/estuary/content':
+                response = self.session.get(url, headers=self._headers(parsed.path), timeout=120, stream=True, allow_redirects=False)
+            else:
+                response = self.asset_session.get(url, timeout=120, stream=True, discard_cookies=True)
             try:
                 ensure_ok(response, 'image_download')
                 declared_size = response.headers.get('content-length', '')

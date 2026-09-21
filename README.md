@@ -97,7 +97,7 @@ Windows 可把 `.venv/bin/python` 换成 `.venv/Scripts/python.exe`。开发前�
 - 点击生成时，提示词与参考图会发送至 ChatGPT 执行生成；“本地”指程序运行与结果存储位置，不代表离线 AI 推理。
 - API/图片有鉴权，工作台限制 Host/Origin，拒绝跨站浏览器请求。服务不监听外部网络地址。
 - 网页请求的完整响应、Token、Cookie 和设备标识不记入日志；错误仅提供安全的状态说明。
-- 图片文件传输使用独立的无登录会话，不携带 ChatGPT 登录 Token、Cookie 或账号设备标识；仅接受 HTTPS 图片地址，不自动跟随重定向。
+- 外部图片文件传输使用独立的无登录会话，不携带 ChatGPT 登录 Token、Cookie 或账号设备标识。ChatGPT 自身的 `/backend-api/estuary/content` 图片接口需要登录，仅对 `https://chatgpt.com` 默认 HTTPS 端口下的该路径使用账号会话；所有下载仅接受 HTTPS，不自动跟随重定向。
 - 删除历史只删记录，保留图片文件，避免破坏其他任务引用。本版本不自动清理图片。
 - 可用性取决于 ChatGPT 网页。登录、验证码或权限问题必须由账号持有人正常完成，程序不绕过授权。
 

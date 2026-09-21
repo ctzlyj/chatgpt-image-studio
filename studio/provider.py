@@ -31,7 +31,6 @@ class WebImageProvider:
             encoded = [base64.b64encode(payload).decode('ascii') for payload in references]
             conversation_id = ''
             blocked = False
-            text_only = False
             progress('已提交网页请求，请勿重复提交')
             for payload in backend._stream_picture_conversation(prompt, model, encoded):
                 if payload == '[DONE]':
@@ -48,13 +47,10 @@ class WebImageProvider:
                 if event.get('type') in {'error', 'conversation_error'} or event.get('error'):
                     raise RuntimeError('网页返回生图错误，请检查账号额度及网页可用性；不要立即重复提交')
                 if event.get('type') == 'moderation':
-                    blocked = bool((event.get('moderation_response') or {}).get('blocked'))
-                if event.get('type') == 'server_ste_metadata':
-                    metadata = event.get('metadata') or {}
-                    text_only = metadata.get('tool_invoked') is False or metadata.get('turn_use_case') == 'text'
+                    blocked = blocked or (event.get('moderation_response') or {}).get('blocked') is True
                 progress('网页正在生成图片')
-            if blocked or text_only:
-                raise RuntimeError('网页未执行生图或拒绝了本次请求，请调整提示词并检查网页')
+            if blocked:
+                raise RuntimeError('网页明确返回审核拦截，本次已停止；请在网页核对或反馈误判，不自动重复提交')
             if not conversation_id:
                 raise RuntimeError('未收到网页会话回执，结果不明；请先到网页核对，不自动重试')
             progress('等待图片文件')
