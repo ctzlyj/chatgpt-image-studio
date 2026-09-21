@@ -94,6 +94,26 @@ class OpenAIBackendAPI:
         ensure_ok(response, 'account_check')
         return response.json()
 
+    def get_account_info(self):
+        me = self._get_me()
+        path = '/backend-api/conversation/init'
+        response = self.session.post(self.base_url + path, headers=self._headers(path, {'Content-Type': 'application/json'}),
+                                     json={'gizmo_id': None, 'requested_default_model': None, 'conversation_id': None, 'timezone_offset_min': -480}, timeout=20)
+        ensure_ok(response, 'account_limits')
+        limits = response.json().get('limits_progress') or []
+        quota, restore_at = None, None
+        for item in limits:
+            if isinstance(item, dict) and item.get('feature_name') == 'image_gen':
+                remaining = item.get('remaining')
+                quota = max(0, int(remaining)) if remaining is not None else None
+                restore_at = item.get('reset_after')
+                break
+        path = '/backend-api/accounts/check/v4-2023-04-27'
+        response = self.session.get(self.base_url + path, headers=self._headers(path), params={'timezone_offset_min': -480}, timeout=20)
+        ensure_ok(response, 'account_plan')
+        account = ((response.json().get('accounts') or {}).get('default') or {}).get('account') or {}
+        return {'email': str(me.get('email') or '')[:254], 'plan': str(account.get('plan_type') or '')[:80], 'quota': quota, 'restore_at': restore_at}
+
     def _bootstrap_headers(self) -> Dict[str, str]:
         """构造首页预热请求头。"""
         return {'User-Agent': self.user_agent, 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8', 'Sec-Ch-Ua': self.session.headers['Sec-Ch-Ua'], 'Sec-Ch-Ua-Mobile': self.session.headers['Sec-Ch-Ua-Mobile'], 'Sec-Ch-Ua-Platform': self.session.headers['Sec-Ch-Ua-Platform'], 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1'}

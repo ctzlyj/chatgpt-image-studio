@@ -41,7 +41,7 @@ class FakeProvider:
 
 @pytest.fixture
 def client(tmp_path):
-    app = create_app(tmp_path, FakeProvider)
+    app = create_app(tmp_path, FakeProvider, lambda values: {'email': 'fixture@example.test', 'plan': 'plus', 'quota': 10, 'restore_at': None})
     app.state.settings.update(SettingsUpdate(access_token='offline-test-placeholder'))
     with TestClient(app, base_url='http://127.0.0.1') as connection:
         result = connection.get('/api/bootstrap').json()

@@ -1,6 +1,6 @@
 export type Asset = { id: string; name: string; width: number; height: number; bytes: number; url: string };
 export type Draft = { prompt: string; mode: 'count' | 'queue' | 'per-image'; count: number; references: string[]; common_references: string[]; ratio: string; custom_size: { widthCm: string; heightCm: string } | null; image_size: '1K' | '2K' | '4K'; derivative: boolean };
-export type Task = { id: string; index: number; prompt: string; effective_prompt: string; status: string; stage: string; error: string; results: Asset[] };
+export type Task = { id: string; index: number; prompt: string; effective_prompt: string; status: string; stage: string; error: string; results: Asset[]; account_id?: string };
 export type Batch = { id: string; created: number; request: Draft; display_model: string; tasks: Task[] };
 export type Settings = { configured: boolean; proxy_configured: boolean; display_model: string; upstream_model: string; credential_storage: string };
 let session = '';

@@ -1,13 +1,24 @@
 import ctypes
+import copy
 import json
 import os
 import secrets
 import threading
+import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
 from pydantic import BaseModel, Field, SecretStr
+
+POOL_DEFAULTS = {'concurrency': 2, 'per_account': 1, 'refresh_minutes': 60}
+
+
+def account_record(token, name=''):
+    return {'id': uuid.uuid4().hex, 'access_token': token, 'name': name or 'ChatGPT 账号', 'enabled': True,
+            'status': 'unverified', 'email': '', 'plan': '', 'quota': None, 'restore_at': None,
+            'success': 0, 'fail': 0, 'last_used': None, 'last_refresh': None, 'created': time.time(), 'error': ''}
 
 
 class SettingsUpdate(BaseModel):
@@ -79,6 +90,11 @@ class Settings:
             self.values.update(json.loads(self._decode(self.path.read_bytes())))
         else:
             self._save()
+        if 'accounts' not in self.values:
+            self.values['accounts'] = [account_record(self.values['access_token'], '原有账号')] if self.values['access_token'] else []
+            self.values['pool'] = dict(POOL_DEFAULTS)
+            self.values['sources'] = []
+            self._save()
 
     def _cipher(self):
         path = self.directory / 'local.key'
@@ -106,23 +122,38 @@ class Settings:
 
     def snapshot(self):
         with self.lock:
-            return dict(self.values)
+            return copy.deepcopy(self.values)
+
+    def commit(self, values):
+        with self.lock:
+            previous = self.values
+            self.values = values
+            try:
+                self._save()
+            except Exception:
+                self.values = previous
+                raise
 
     def public(self):
         current = self.snapshot()
-        return {'configured': bool(current['access_token']), 'proxy_configured': bool(current['proxy']),
+        return {'configured': any(account['enabled'] for account in current['accounts']), 'account_count': len(current['accounts']), 'proxy_configured': bool(current['proxy']),
                 'upstream_model': current['upstream_model'], 'display_model': current['display_model'],
                 'model_verified': False, 'credential_storage': 'Windows 当前用户加密' if os.name == 'nt' else '本机私有密钥加密'}
 
     def update(self, request: SettingsUpdate):
         with self.lock:
-            next_values = dict(self.values)
+            next_values = self.snapshot()
             if request.access_token is not None:
                 token = parse_access_token(request.access_token.get_secret_value())
                 if token:
+                    existing = next((account for account in next_values['accounts'] if account['access_token'] == token), None)
+                    if existing is None:
+                        existing = account_record(token)
+                        next_values['accounts'].append(existing)
                     next_values['access_token'] = token
             if request.clear_token:
-                next_values['access_token'] = ''
+                next_values['accounts'] = [account for account in next_values['accounts'] if account['access_token'] != next_values['access_token']]
+                next_values['access_token'] = next((account['access_token'] for account in next_values['accounts'] if account['enabled']), '')
             if request.proxy is not None:
                 proxy = request.proxy.get_secret_value().strip()
                 parsed = urlsplit(proxy)
@@ -130,6 +161,5 @@ class Settings:
                     raise ValueError('代理地址须为 HTTP、HTTPS 或 SOCKS5 地址')
                 next_values['proxy'] = proxy
             next_values.update(upstream_model=request.upstream_model, display_model=request.display_model)
-            self.values = next_values
-            self._save()
+            self.commit(next_values)
         return self.public()

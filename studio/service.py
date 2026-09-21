@@ -10,11 +10,12 @@ from .provider import public_error
 
 
 class StudioService:
-    def __init__(self, store, settings, provider):
+    def __init__(self, store, settings, provider, pool):
         self.store = store
         self.settings = settings
         self.provider = provider
-        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='web-image')
+        self.pool = pool
+        self.executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix='web-image')
         self.submit_lock = threading.Lock()
 
     def submit(self, request):
@@ -41,25 +42,38 @@ class StudioService:
         return self.store.batch(batch['id'])
 
     def _run(self, task, model):
-        with self.store.lock:
-            current = next(item for item in self.store.tasks(task['batch_id']) if item['id'] == task['id'])
-            if current['status'] != 'queued':
-                return
-            self.store.update_task(task['id'], status='running', stage='连接 ChatGPT')
+        account_id, succeeded, failure, started = None, False, None, False
         try:
+            def cancelled():
+                return next(item for item in self.store.tasks(task['batch_id']) if item['id'] == task['id'])['status'] != 'queued'
+            lease = self.pool.acquire(cancelled)
+            if lease is None:
+                return
+            account_id, account_settings = lease
+            with self.store.lock:
+                if cancelled():
+                    return
+                self.store.update_task(task['id'], status='running', stage='连接 ChatGPT', account_id=account_id)
+                started = True
+            provider = self.provider.for_account(account_settings) if hasattr(self.provider, 'for_account') else self.provider
             last_stage = ''
             def progress(stage):
                 nonlocal last_stage
                 if stage != last_stage:
                     self.store.update_task(task['id'], stage=stage)
                     last_stage = stage
-            images = self.provider.generate(task['effective_prompt'], [self.store.asset_bytes(asset_id) for asset_id in task['references']], model, progress)
+            images = provider.generate(task['effective_prompt'], [self.store.asset_bytes(asset_id) for asset_id in task['references']], model, progress)
             if not images:
                 raise RuntimeError('网页没有返回图片')
             results = [self.store.save_asset(image, f'作品-{task["index"] + 1}', 'result') for image in images]
             self.store.update_task(task['id'], status='success', stage='已保存到本机', results=results)
+            succeeded = True
         except Exception as error:
+            failure = error
             self.store.update_task(task['id'], status='failed', stage='未完成', error=public_error(error))
+        finally:
+            if account_id is not None:
+                self.pool.release(account_id, succeeded if started else None, failure)
 
     def cancel(self, batch_id):
         with self.store.lock:

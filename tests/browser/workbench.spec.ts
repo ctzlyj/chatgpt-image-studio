@@ -130,3 +130,86 @@ test('connection accepts a pasted whole multiline session JSON without storing p
   await page.getByRole('button', { name: '已配置连接' }).click();
   await expect(page.getByLabel('网页登录凭证', { exact: true })).toHaveValue('');
 });
+
+test('account pool imports full JSON, refreshes, edits, disables, backs up and restores', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '号池管理', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '号池管理' })).toBeVisible();
+  await page.getByRole('button', { name: '导入账号', exact: true }).click();
+  await page.getByLabel('导入账号备注').fill('浏览器号池回归');
+  const payload = JSON.stringify({ accessToken: 'synthetic-pool-browser-fixture', user: { name: 'PRIVATE_IMPORT_PROFILE' } }, null, 2);
+  await page.getByLabel('号池导入内容').evaluate((element, text) => {
+    const transfer = new DataTransfer(); transfer.setData('text/plain', text);
+    element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }));
+  }, payload);
+  await page.getByRole('button', { name: '导入粘贴内容' }).click();
+  await expect(page.getByRole('status')).toContainText('已新增 1');
+  await page.getByLabel('搜索账号').fill('浏览器号池回归');
+  const row = page.locator('.account-table tbody tr');
+  await expect(row).toHaveCount(1);
+  await page.getByLabel('全选当前筛选账号').check();
+  await page.getByRole('button', { name: '刷新选中' }).click();
+  await expect(row).toContainText('synthetic@example.test');
+  await expect(row).toContainText('可用');
+  await row.getByRole('button', { name: '编辑', exact: true }).click();
+  await page.getByLabel('编辑账号名称').fill('浏览器号池回归-已编辑');
+  await page.getByRole('button', { name: '保存账号', exact: true }).click();
+  await expect(row).toContainText('浏览器号池回归-已编辑');
+  await page.getByRole('button', { name: '停用', exact: true }).click();
+  await expect(row).toContainText('已停用');
+  await page.getByLabel('全选当前筛选账号').check();
+  await page.getByRole('button', { name: '加密导出', exact: true }).click();
+  await page.getByLabel('备份口令', { exact: true }).fill('synthetic-browser-backup-password');
+  const downloadEvent = page.waitForEvent('download');
+  await page.getByRole('button', { name: '导出选中账号', exact: true }).click();
+  const download = await downloadEvent;
+  const backupPath = await download.path();
+  expect(backupPath).toBeTruthy();
+  await page.getByRole('button', { name: '关闭备份', exact: true }).click();
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: '删除选中', exact: true }).click();
+  await expect(row).toHaveCount(0);
+  await page.getByRole('button', { name: '恢复备份', exact: true }).click();
+  await page.getByLabel('备份口令', { exact: true }).fill('synthetic-browser-backup-password');
+  await page.getByLabel('恢复备份文件').setInputFiles(backupPath!);
+  await page.getByRole('button', { name: '恢复到号池' }).click();
+  await expect(page.getByRole('status')).toContainText('已恢复 1');
+  await page.getByLabel('搜索账号').fill('');
+  await expect(page.locator('.account-table tbody tr')).not.toHaveCount(0);
+  const storage = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }));
+  expect(storage).not.toContain('synthetic-pool-browser-fixture');
+  expect(storage).not.toContain('PRIVATE_IMPORT_PROFILE');
+  await page.screenshot({ path: 'test-results/account-pool-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole('button', { name: '导入账号', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/account-pool-mobile.png', fullPage: true });
+  await page.getByRole('button', { name: '关闭号池管理' }).click();
+  await page.reload();
+  await page.getByRole('button', { name: '号池管理', exact: true }).click();
+  await expect(page.locator('.account-table tbody tr')).not.toHaveCount(0);
+});
+
+test('remote CPA and sub2api configuration lists and imports through the backend', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '号池管理', exact: true }).click();
+  await page.getByRole('button', { name: 'CPA / sub2api 导入' }).click();
+  for (const kind of ['cpa', 'sub2api']) {
+    await page.getByLabel('导入服务类型').selectOption(kind);
+    await page.getByLabel('服务器名称', { exact: true }).fill(`回归-${kind}`);
+    await page.getByLabel('服务器地址', { exact: true }).fill('https://example.test');
+    await page.getByLabel('服务器管理密钥').fill('synthetic-management-key');
+    await page.getByRole('button', { name: '保存服务器', exact: true }).click();
+    await expect(page.getByLabel('服务器管理密钥')).toHaveValue('');
+    const server = page.locator('.source-list > div').filter({ hasText: `回归-${kind}` });
+    await server.getByRole('button', { name: '读取账号列表' }).click();
+    await expect(page.locator('.remote-items > label')).toHaveCount(1);
+    await page.getByLabel('全选远程筛选结果').check();
+    await page.getByRole('button', { name: '导入选中（1）' }).click();
+    await expect(page.locator('.import-job').last()).toContainText('已完成', { timeout: 15000 });
+  }
+  const storage = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }));
+  expect(storage).not.toContain('synthetic-management-key');
+  await page.getByRole('button', { name: /^账号与调度/ }).click();
+  await expect(page.getByRole('dialog', { name: '号池管理' })).toBeVisible();
+});

@@ -5,11 +5,17 @@ def new_uuid():
     return str(uuid.uuid4())
 
 
+class UpstreamHTTPError(RuntimeError):
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def ensure_ok(response, context):
     if 200 <= response.status_code < 300:
         return
     messages = {401: '网页登录已失效，请更新登录凭证', 403: '网页拒绝访问，请在 ChatGPT 完成登录或验证', 429: '网页账号额度不足或限流，请稍后再试'}
-    raise RuntimeError(messages.get(response.status_code, f'网页请求失败（HTTP {response.status_code}，{context}）'))
+    raise UpstreamHTTPError(messages.get(response.status_code, f'网页请求失败（HTTP {response.status_code}，{context}）'), response.status_code)
 
 
 def iter_sse_payloads(response):

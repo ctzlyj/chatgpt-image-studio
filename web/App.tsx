@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowUpRight, Check, ChevronDown, CircleHelp, Copy, Images, Layers, LoaderCircle, Maximize2, Plus, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, Upload, X } from 'lucide-react';
 import { api, ApiError, Asset, Batch, bootstrap, download, Draft, initialDraft, Settings } from './api';
+import { Accounts } from './Accounts';
 
 const ratios = ['Adaptive', '1:1', '16:9', '21:9', '4:3', '3:2', '5:4', '2:1', '3:4', '2:3', '4:5', '9:16'];
 const active = (batch: Batch) => batch.tasks.some(task => ['queued', 'running'].includes(task.status));
@@ -20,6 +21,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAccounts, setShowAccounts] = useState(false);
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
   const [preview, setPreview] = useState<string[] | null>(null);
@@ -133,7 +135,7 @@ export function App() {
 
   return <div className="app-shell">
     <header className="topbar"><div className="brand"><div className="brand-mark"><Layers size={24}/></div><div><strong>画间</strong><span>ChatGPT 图片工作台</span></div></div>
-      <div className="header-actions"><span className="local-label"><span/>本地工作台 · 结果保存本机</span><button className="connection-button" onClick={() => setShowSettings(true)}><span className={settings?.configured ? 'dot connected' : 'dot'}/>{settings?.configured ? '已配置连接' : '配置 ChatGPT'}<Settings2 size={16}/></button></div></header>
+      <div className="header-actions"><span className="local-label"><span/>本地工作台 · 结果保存本机</span><button className="connection-button account-entry" onClick={() => setShowAccounts(true)}>号池管理</button><button className="connection-button" onClick={() => setShowSettings(true)}><span className={settings?.configured ? 'dot connected' : 'dot'}/>{settings?.configured ? '已配置连接' : '配置 ChatGPT'}<Settings2 size={16}/></button></div></header>
     {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError('')}><X size={17}/></button></div>}
     <main className="workspace">
       <aside className="composer"><div className="section-heading"><h1>自定义生图</h1><span>把想法变成图片</span></div>
@@ -159,13 +161,14 @@ export function App() {
         {current ? <><div className="batch-toolbar"><span>{current.tasks.length} 个独立任务 · 结果实时保存</span><div><button onClick={() => { setDraft({ ...initialDraft, ...current.request }); setToast('已恢复本批提示词、参考图及画布设置'); }}>恢复设置</button><button onClick={() => setPreview(current.tasks.map(task => task.effective_prompt))}>查看提示词</button>{active(current) ? <button onClick={() => api(`/api/batches/${current.id}/cancel`, {}).then(refresh).catch(fail)}><Square size={12}/>取消未开始</button> : <button aria-label="删除此批历史" onClick={() => { if (confirm('只删除此批历史记录，图片文件仍保留在本地。确定删除？')) api(`/api/batches/${current.id}`, undefined, 'DELETE').then(refresh).catch(fail); }}><Trash2 size={14}/></button>}</div></div>
           <div className="result-grid">{current.tasks.map(task => <article className={`result-card ${task.status}`} key={task.id}><div className="card-meta"><span>作品 {String(task.index + 1).padStart(2, '0')}</span><span className={`status ${task.status}`}>{labels[task.status]}</span></div>
             {task.results.length ? task.results.map(image => <div key={image.id}><button className="image-button" onClick={() => { setLightbox(image); setOriginal(false); }}><img src={image.url} alt={task.prompt}/><span><Maximize2 size={17}/> 查看大图</span></button><div className="image-meta"><span>{image.width} × {image.height}</span><span>PNG · {(image.bytes / 1024 / 1024).toFixed(1)} MB</span></div><div className="card-actions"><button onClick={() => editImage(image)}><Sparkles size={14}/>继续修改</button><button onClick={() => addReference(image)}><Plus size={14}/>作参考</button><button aria-label={`下载作品 ${task.index + 1}`} onClick={() => download(image.url, `画间-${task.index + 1}.png`).catch(fail)}><ArrowDownToLine size={16}/></button></div></div>) : <div className="task-placeholder">{['queued', 'running'].includes(task.status) ? <><LoaderCircle className={task.status === 'running' ? 'spin' : ''} size={28}/><strong>{task.stage}</strong><span>无需保持页面打开</span></> : <><CircleHelp size={28}/><strong>{task.stage}</strong><p>{task.error || '此任务未生成图片'}</p><button onClick={() => { setDraft({ ...initialDraft, ...current.request, prompt: task.prompt, mode: 'count', count: 1 }); setToast('已载入要求。请核对网页后再点击生成，不会自动重试。'); }}>载入要求，手动重试</button></>}</div>}
-            <p className="card-prompt" title={task.prompt}>{task.prompt}</p></article>)}</div></>
+            <p className="card-prompt" title={task.prompt}>{task.prompt}</p>{task.account_id && <small className="task-account">执行账号：{task.account_id.slice(0, 8)}</small>}</article>)}</div></>
           : <div className="empty-workspace"><div className="empty-art"><div/><div/><div><Images size={46} strokeWidth={1}/></div></div><h3>第一张作品，从一句话开始</h3><p>输入提示词，也可以带上你的商品参考图。<br/>生成的图片、修改版本和任务记录，都保存在这里。</p><div className="empty-features"><span><Check size={14}/>自由提示词</span><span><Check size={14}/>多图参考</span><span><Check size={14}/>本地历史</span></div></div>}
-        <footer className="workspace-footer"><span>本地单账号队列 · 不自动重试未知结果</span><span>网页接口可能变化，账号额度与平台规则仍然适用</span></footer>
+        <footer className="workspace-footer"><span>本地号池轮询 · 不自动重试未知结果</span><span>网页接口可能变化，账号额度与平台规则仍然适用</span></footer>
       </section>
     </main>
     {toast && <div className="toast" role="status"><Check size={17}/>{toast}</div>}
     {showSettings && settings && <SettingsDialog settings={settings} close={() => setShowSettings(false)} saved={value => { setSettings(value); setToast('连接设置已保存到本机'); }}/ >}
+    {showAccounts && <Accounts close={() => setShowAccounts(false)} saved={setSettings}/>}
     {preview && <div className="overlay" onClick={() => setPreview(null)}><section className="dialog preview-dialog" role="dialog" aria-modal="true" aria-label="发送内容预览" onClick={event => event.stopPropagation()}><div className="dialog-heading"><h2>实际发送的提示词</h2><button aria-label="关闭预览" onClick={() => setPreview(null)}><X/></button></div><p>普通生成只发送你填写的内容；画布与继续修改规则会在这里完整展示。</p>{preview.map((text, index) => <div className="prompt-preview" key={index}><strong>任务 {index + 1}</strong><pre>{text}</pre></div>)}</section></div>}
     {lightbox && <div className="lightbox" role="dialog" aria-modal="true" aria-label="图片大图"><div className="lightbox-toolbar"><span>{lightbox.width} × {lightbox.height} · {original ? '原尺寸' : '适应窗口'}</span><div><button onClick={() => setOriginal(!original)}>{original ? '适应窗口' : '原尺寸查看'}</button><button onClick={() => download(lightbox.url, '画间-原图.png').catch(fail)}><ArrowDownToLine size={17}/>下载原图</button><button aria-label="关闭大图" onClick={() => setLightbox(null)}><X/></button></div></div><div className={`lightbox-canvas ${original ? 'original' : ''}`}><img src={lightbox.url} alt={lightbox.name} width={original ? lightbox.width : undefined} height={original ? lightbox.height : undefined}/></div></div>}
   </div>;
@@ -193,11 +196,12 @@ function SettingsDialog({ settings, close, saved }: { settings: Settings; close:
   }
   return <div className="overlay"><section className="dialog settings-dialog" role="dialog" aria-modal="true" aria-label="连接设置"><div className="dialog-heading"><div><h2>连接你的 ChatGPT</h2><p>只连接自己的账号，凭证不进入浏览器历史或代码仓库。</p></div><button aria-label="关闭连接设置" onClick={close}><X/></button></div>
     <div className="connection-state"><span className={settings.configured ? 'dot connected' : 'dot'}/>{settings.configured ? '已保存网页登录凭证' : '尚未连接'}<small>{settings.credential_storage}</small></div>
+    <p className="connection-pool-hint">新凭证会加入号池并设为默认连接，不覆盖已有账号。多账号编辑、额度刷新和调度请使用右上角「号池管理」。</p>
     <label className="settings-label">网页登录凭证<input type="password" autoComplete="new-password" value={token} onChange={event => setToken(event.target.value)} onPaste={event => { event.preventDefault(); setToken(event.clipboardData.getData('text/plain')); }} placeholder={settings.configured ? '可粘贴整个会话 JSON 更新；留空不修改' : '直接粘贴整个会话 JSON，自动提取凭证'}/></label>
     <details className="help"><summary>全选复制会话 JSON，无需查找字段</summary><p>在你自己的浏览器登录 ChatGPT，再打开下方会话信息页，全选复制页面中的整个 JSON，粘贴到上方输入框并保存。程序自动提取登录凭证，无需自己查找 <code>accessToken</code>；也兼容单独粘贴凭证。</p><a href="https://chatgpt.com/api/auth/session" target="_blank" rel="noreferrer">打开 ChatGPT 会话信息页 <ArrowUpRight size={14}/></a><p>只加密保存所需凭证，不保存 JSON 中的个人资料。整个 JSON 也包含敏感登录信息，请勿发给别人。凭证有有效期；若遇到验证或无权访问，请先在网页完成登录，本程序不自动注册或绕过权限。</p></details>
     <label className="settings-label">出站代理 <span>可选</span><input type="password" autoComplete="off" value={proxy} onChange={event => { setProxy(event.target.value); setProxyChanged(true); }} placeholder={settings.proxy_configured ? '已有代理；留空不修改。填写后清空可删除。' : 'http://127.0.0.1:端口 或 socks5://…'}/></label>
     <details className="advanced"><summary>模型映射与本地 API</summary><label className="settings-label">对外模型名称<input value={display} onChange={event => setDisplay(event.target.value)}/></label><label className="settings-label">网页请求 model 参数<input value={upstream} onChange={event => setUpstream(event.target.value)}/></label><p>沿用源项目的网页参数作为初始值。gpt-image-2.5 是对外别名，不代表已经验证底层版本；修改名称不等于升级模型。</p><p>API 地址：<code>{location.origin}/v1</code><br/>支持 images/generations、images/edits 与 models。</p><button className="secondary" onClick={async () => { try { const result = await api<{ api_key: string }>('/api/local-api-key', {}); await navigator.clipboard.writeText(result.api_key); setMessage('本地 API 密钥已复制，请勿分享或提交到 Git'); } catch { setMessage('无法复制密钥，请检查浏览器剪贴板权限'); } }}><Copy size={14}/>复制本地 API 密钥</button></details>
     {message && <div className="settings-message" role="status">{message}</div>}
-    <div className="settings-actions"><button className="text-button danger" disabled={working || !settings.configured} onClick={() => { if (confirm('清除本地网页登录凭证？历史图片不会删除。')) save(true); }}>清除凭证</button><div><button className="secondary" disabled={working || !settings.configured || Boolean(token)} onClick={check}>检查已保存连接</button><button className="primary" disabled={working} onClick={() => save()}>{working ? <LoaderCircle size={16} className="spin"/> : '保存设置'}</button></div></div>
+    <div className="settings-actions"><button className="text-button danger" disabled={working || !settings.configured} onClick={() => { if (confirm('删除默认连接账号？其他号池账号、历史图片不会删除。')) save(true); }}>清除默认凭证</button><div><button className="secondary" disabled={working || !settings.configured || Boolean(token)} onClick={check}>检查已保存连接</button><button className="primary" disabled={working} onClick={() => save()}>{working ? <LoaderCircle size={16} className="spin"/> : '保存设置'}</button></div></div>
   </section></div>;
 }

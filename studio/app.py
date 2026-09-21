@@ -23,6 +23,10 @@ from .provider import WebImageProvider, public_error
 from .service import StudioService
 from .settings import Settings, SettingsUpdate
 from .store import Store
+from .accounts import AccountPool
+from .account_routes import account_routes
+from .provider import inspect_account
+from .account_sources import AccountSources, source_routes
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,17 +41,22 @@ class ImageRequest(BaseModel):
     stream: bool = False
 
 
-def create_app(data_dir=None, provider_factory=WebImageProvider):
+def create_app(data_dir=None, provider_factory=WebImageProvider, account_inspector=inspect_account):
     directory = Path(data_dir or ROOT / 'data')
     settings = Settings(directory)
     store = Store(directory)
     provider = provider_factory(settings)
-    service = StudioService(store, settings, provider)
+    pool = AccountPool(settings, account_inspector)
+    sources = AccountSources(settings, pool)
+    service = StudioService(store, settings, provider, pool)
     session = secrets.token_urlsafe(36)
 
     @asynccontextmanager
     async def lifespan(_app):
+        pool.start()
         yield
+        await run_in_threadpool(sources.close)
+        await run_in_threadpool(pool.close)
         await run_in_threadpool(service.close)
         store.connection.close()
 
@@ -55,6 +64,10 @@ def create_app(data_dir=None, provider_factory=WebImageProvider):
     app.state.store = store
     app.state.settings = settings
     app.state.service = service
+    app.state.pool = pool
+    app.state.sources = sources
+    app.include_router(account_routes(pool))
+    app.include_router(source_routes(sources))
 
     @app.middleware('http')
     async def local_guard(request, call_next):
@@ -106,7 +119,12 @@ def create_app(data_dir=None, provider_factory=WebImageProvider):
 
     @app.post('/api/settings')
     def set_settings(body: SettingsUpdate):
-        return settings.update(body)
+        with pool.condition:
+            if body.clear_token and any(pool.inflight.values()):
+                raise ValueError('账号正在执行任务，请完成后再清除凭证')
+            result = settings.update(body)
+            pool.condition.notify_all()
+            return result
 
     @app.post('/api/connection/check')
     def check_connection():

@@ -5,9 +5,28 @@ import re
 from .upstream.backend import OpenAIBackendAPI
 
 
+class AccountSettings:
+    def __init__(self, values):
+        self.values = values
+
+    def snapshot(self):
+        return dict(self.values)
+
+
+def inspect_account(values):
+    backend = OpenAIBackendAPI(values['access_token'], values['proxy'], values['upstream_model'])
+    try:
+        return backend.get_account_info()
+    finally:
+        backend.close()
+
+
 class WebImageProvider:
     def __init__(self, settings):
         self.settings = settings
+
+    def for_account(self, values):
+        return WebImageProvider(AccountSettings(values))
 
     def connect(self):
         settings = self.settings.snapshot()
@@ -65,7 +84,7 @@ class WebImageProvider:
 
 def public_error(error):
     message = str(error)
-    if message.startswith(('网页', '未收到网页', '请先在连接', '参考图', '本地图片')) and not re.search(r'Bearer|eyJ|access_token|https?://', message, re.I):
+    if message.startswith(('号池', '网页', '未收到网页', '请先在连接', '参考图', '本地图片')) and not re.search(r'Bearer|eyJ|access_token|https?://', message, re.I):
         return message[:220]
     if any(word in message.lower() for word in ['arkose', 'turnstile', 'proof', 'requirements']):
         return '网页要求额外验证，或网页协议已变化。请先在 ChatGPT 完成验证，再检查适配器；不会绕过登录权限'
