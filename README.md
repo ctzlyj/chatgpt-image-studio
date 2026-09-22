@@ -103,6 +103,30 @@ CPA/sub2api 协议兼容测试使用隔离模拟服务器；真实部署仍取�
 - 客户端断线不取消已接收任务。返回中的 `batch_id` 可在工作台对应历史核对。部分失败时 API 返回错误并报告已完成数，成功图片仍保留在工作台。
 - 不包含通用文本聊天、自动注册、额度规避或云端存储。
 
+## 给 Agent 使用的 Skill
+
+仓库内置 [`chatgpt-web-image`](skills/chatgpt-web-image/SKILL.md) Skill。把该 Skill 的 GitHub 目录链接发给支持 Skills 的 Agent 后，用户首次只需在本机安全粘贴完整 ChatGPT Session JSON；Skill 会自动安装或启动本地服务、导入账号，并通过 `gpt-image-2.5` 图片 API 完成文生图、参考图编辑及图片落盘。
+
+可直接转发给 Agent 的 Skill 地址：
+
+```text
+https://github.com/ctzlyj/chatgpt-image-studio/tree/main/skills/chatgpt-web-image
+```
+
+可直接转发的使用要求：
+
+```text
+请安装并使用 chatgpt-web-image Skill。首次配置时打开本机安全粘贴窗口，我只提供完整 ChatGPT Session JSON；不要让我查找 Token 或本地 API Key，也不要在聊天、命令行、日志或源码中回显凭证。之后按我的提示词直接生图或用参考图编辑，并把生成文件路径交给我。
+```
+
+推荐首次配置命令：
+
+```powershell
+python skills/chatgpt-web-image/scripts/image_studio_client.py configure --clipboard
+```
+
+完整 Session 属于登录凭证。Skill 默认从本机剪贴板或本机粘贴窗口读取，不要求用户在普通聊天、命令行参数或源码中暴露凭证。
+
 ## 数据与安全
 
 - `data/connection.enc`：网页登录号池、账号信息、远程导入服务器配置/回执、代理与本地 API 密钥。Windows 使用当前系统用户的 DPAPI 加密；其他系统使用权限受限的本地 Fernet 密钥。不要复制此目录给别人，也不要公开它。

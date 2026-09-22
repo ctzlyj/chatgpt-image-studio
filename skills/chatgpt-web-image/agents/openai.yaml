@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatGPT 网页生图"
+  short_description: "用完整 Session 启用 ChatGPT 网页生图 API"
+  default_prompt: "Use $chatgpt-web-image to configure my ChatGPT session and generate the requested images."

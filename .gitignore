@@ -9,6 +9,7 @@ __pycache__/
 .pytest_cache/
 test-results/
 playwright-report/
+generated-images/
 *.log
 *.db
 *.zip
