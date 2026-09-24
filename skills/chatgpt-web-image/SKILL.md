@@ -57,7 +57,7 @@ python scripts/image_studio_client.py generate --prompt "一只陶瓷马克杯�
 ```
 
 - The client saves enlarged files as `image-01-upscaled2x-<backend>.png` and reports `native_size`, `size` and the backend label per image.
-- The default backend is Lanczos resampling. Call it algorithmic upscaling, never "AI upscaling". Only a `realesrgan` backend in the response is genuine super resolution.
+- On Windows the repository ships a free Real-ESRGAN backend (`tools/realesrgan-ncnn-vulkan` plus the `realesrgan-x4plus` photo model); it runs offline and reports the `realesrgan` backend when a usable GPU is found. Other machines fall back to Lanczos resampling. Call that fallback algorithmic upscaling, never "AI upscaling". Only a `realesrgan` backend in the response is genuine super resolution.
 - Report both the native size and the delivered size to the user, and state that the enlarged file is not native pixels.
 
 For long prompts, save only the non-secret prompt in a task-local file and use `--prompt-file PATH`.

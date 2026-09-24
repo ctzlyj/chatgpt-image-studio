@@ -23,3 +23,11 @@
 - 原私有仓库未声明通用开源许可证。本次公开交付不应被理解为把该私有仓库的其余部分开源，也不新增对其余部分的许可。
 
 本项目未替所有者选择额外的整体开源许可证；公开可见不等于对所有代码授予任意再许可权。第三方已有许可证各自适用。
+
+## Real-ESRGAN（真超分放大后端）
+
+- 上游：<https://github.com/xinntao/Real-ESRGAN>（BSD-3-Clause）
+- 可执行文件来源：官方 Release `realesrgan-ncnn-vulkan-20220424-windows.zip`，仅保留程序运行所需的 `realesrgan-ncnn-vulkan.exe`、`vcomp140.dll` 和 `realesrgan-x4plus` 照片模型文件，未保留演示素材和其他动漫模型。
+- 使用范围：仅在用户明确选择 2×–4× 交付放大时，对本地生成的图片离线运行；不联网、不上传图片。
+- ncnn 推理框架来自 <https://github.com/Tencent/ncnn>（BSD-3-Clause）。
+- 该后端失败或被环境变量 `IMAGE_STUDIO_UPSCALER=none|off|lanczos` 禁用时，程序回退 Lanczos 算法放大并如实标注，不会冒充 AI 超分。

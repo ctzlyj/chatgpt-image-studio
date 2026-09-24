@@ -80,7 +80,8 @@ Windows 可把 `.venv/bin/python` 换成 `.venv/Scripts/python.exe`。开发前�
 
 - 默认 1×，即网页原生输出；可选 2×–4×，上限 4000 万像素。
 - 默认后端是 Lanczos 重采样加轻度锐化，标注为「算法放大…非原生像素」，**不会自称 AI 放大**。
-- 把 Real-ESRGAN 的 ncnn 可执行文件放到 `tools/`，或用环境变量 `IMAGE_STUDIO_UPSCALER` 指向它，才会切换为「AI 超分放大」标注；文件缺失或运行失败时自动回退算法放大并在响应的 `fallback` 里写明。
+- 仓库已附带免费的 Real-ESRGAN 超分后端（Windows 版 `realesrgan-ncnn-vulkan` 与 `realesrgan-x4plus` 照片模型，BSD-3 开源许可），放在 `tools/` 下离线运行、不联网、不消耗额度，检测到可用显卡时自动切换为「AI 超分放大」标注。
+- 其他平台可用环境变量 `IMAGE_STUDIO_UPSCALER` 指向自己的可执行文件；设为 `none` / `off` / `lanczos` 可强制禁用真超分。后端缺失或运行失败时自动回退算法放大并在响应的 `fallback` 里写明，绝不冒充 AI。
 - 原生图永远是源文件，不被覆盖。放大件在文件名（`-upscaled2x-lanczos.png`）、响应头（`X-Image-Upscale-Factor` / `X-Image-Upscale-Backend` / `X-Image-Native-Size`）和 API 字段（`native_size` / `size` / `upscale.label`）中都能看出来。
 
 ## 号池管理

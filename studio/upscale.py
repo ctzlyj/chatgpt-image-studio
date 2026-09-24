@@ -8,9 +8,10 @@
 * Lanczos 重采样就叫算法放大，不叫 AI 放大。只有真的跑了超分模型，才允许
   出现 “AI 超分” 字样。
 
-可选的真超分后端：把 Real-ESRGAN 的 ncnn 可执行文件放到仓库 `tools/` 下，或用
-环境变量 `IMAGE_STUDIO_UPSCALER` 指向它，本模块会自动改用它并换成 AI 标注。
-缺少该文件时不报错，回退到算法放大并在标注里写明。
+可选的真超分后端：仓库 `tools/` 已附带 Windows 版 `realesrgan-ncnn-vulkan` 和
+`realesrgan-x4plus` 照片模型；其他平台可用环境变量 `IMAGE_STUDIO_UPSCALER`
+指向自己的可执行文件。把它设为 `none` / `off` / `lanczos` 可强制禁用真超分。
+文件缺失或运行失败都不报错，回退到算法放大并在标注里写明。
 """
 from io import BytesIO
 from pathlib import Path
@@ -37,6 +38,8 @@ LABELS = {
 def upscaler_path():
     """找出可用的真超分可执行文件，找不到返回 None。"""
     configured = os.environ.get('IMAGE_STUDIO_UPSCALER', '').strip()
+    if configured.lower() in {'none', 'off', 'lanczos'}:
+        return None
     candidates = [Path(configured)] if configured else []
     candidates += [
         ROOT / 'tools' / 'realesrgan-ncnn-vulkan.exe',
@@ -86,7 +89,14 @@ def _realesrgan(executable, image, width, height):
         target = Path(workspace) / 'target.png'
         image.save(source, format='PNG')
         subprocess.run(
-            [str(executable), '-i', str(source), '-o', str(target), '-s', '4'],
+            [
+                str(executable),
+                '-i', str(source),
+                '-o', str(target),
+                '-s', '4',
+                '-n', 'realesrgan-x4plus',
+                '-m', str(executable.parent / 'models'),
+            ],
             check=True,
             capture_output=True,
             timeout=600,

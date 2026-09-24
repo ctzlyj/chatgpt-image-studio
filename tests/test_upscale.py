@@ -4,6 +4,7 @@
 都能拿到 “原生尺寸 / 交付尺寸 / 放大倍数” 三个事实。
 """
 from io import BytesIO
+from pathlib import Path
 
 from PIL import Image
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from studio import upscale as upscale_module
 from studio.upscale import (
     ALGORITHM_BACKEND,
+    AI_BACKEND,
     MAX_FACTOR,
     available_backend,
     capability,
@@ -70,6 +72,37 @@ def test_out_of_range_factors_are_refused():
     for bad in [0, -1, MAX_FACTOR + 1, 'two', None]:
         with pytest.raises(ValueError):
             upscale_png(fixture_image(), bad)
+
+
+def test_the_environment_switch_can_force_the_algorithm_backend(monkeypatch):
+    monkeypatch.setenv('IMAGE_STUDIO_UPSCALER', 'off')
+    assert upscale_module.upscaler_path() is None
+    monkeypatch.setenv('IMAGE_STUDIO_UPSCALER', 'lanczos')
+    assert upscale_module.upscaler_path() is None
+
+
+def test_the_real_backend_is_invoked_with_the_photo_model_and_models_dir(monkeypatch, tmp_path):
+    executable = tmp_path / 'realesrgan-ncnn-vulkan.exe'
+    executable.write_bytes(b'fixture')
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        source = Path(command[command.index('-i') + 1])
+        target = Path(command[command.index('-o') + 1])
+        with Image.open(source) as source_image:
+            source_image.resize((source_image.width * 2, source_image.height * 2), Image.Resampling.LANCZOS).save(target, format='PNG')
+        return None
+
+    monkeypatch.setattr(upscale_module, 'upscaler_path', lambda: executable)
+    monkeypatch.setattr(upscale_module.subprocess, 'run', fake_run)
+    payload, marker = upscale_png(fixture_image(), 2)
+    assert marker['backend'] == AI_BACKEND
+    assert 'AI 超分' in marker['label']
+    assert png_size(payload) == (1024, 1280)
+    command = commands[0]
+    assert command[command.index('-n') + 1] == 'realesrgan-x4plus'
+    assert Path(command[command.index('-m') + 1]) == executable.parent / 'models'
 
 
 def test_oversized_output_is_refused_before_allocating_it():

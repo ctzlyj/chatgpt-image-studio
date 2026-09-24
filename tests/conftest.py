@@ -19,6 +19,12 @@ def fixture_image():
     return output.getvalue()
 
 
+@pytest.fixture(autouse=True)
+def fast_upscale(monkeypatch):
+    """仓库自带真超分后端后，单元测试仍固定走算法放大，保证快速且不受机器 GPU 影响。"""
+    monkeypatch.setenv('IMAGE_STUDIO_UPSCALER', 'lanczos')
+
+
 class FakeProvider:
     calls = []
 
