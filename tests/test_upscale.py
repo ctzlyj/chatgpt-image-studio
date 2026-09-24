@@ -189,3 +189,30 @@ def test_edit_endpoint_accepts_upscale_and_labels_the_result(client):
     assert item['native_size'] == '512x640'
     assert item['size'] == '1024x1280'
     assert item['upscale']['factor'] == 2
+
+
+def test_size_hint_is_not_mistaken_for_a_user_canvas(client):
+    """回归：提示词含「海报」等词时，API 生成的像素说明不能被当成用户画布。"""
+    headers = api_headers(client)
+    response = client.post(
+        '/v1/images/generations',
+        headers=headers,
+        json={'prompt': '设计一张竖版平面设计海报，标题醒目', 'size': '3:4'},
+    )
+    assert response.status_code == 200
+    revised = response.json()['data'][0]['revised_prompt']
+    assert '宽高比为 3:4' in revised
+    assert '1086×1448' in revised
+
+
+def test_non_standard_ratio_falls_back_to_a_prompt_hint_without_pixels(client):
+    headers = api_headers(client)
+    response = client.post(
+        '/v1/images/generations',
+        headers=headers,
+        json={'prompt': 'fixture', 'size': '1920x1200'},
+    )
+    assert response.status_code == 200
+    revised = response.json()['data'][0]['revised_prompt']
+    assert '宽高比为 8:5' in revised
+    assert '目标输出' not in revised

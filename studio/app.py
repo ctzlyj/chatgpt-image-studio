@@ -264,15 +264,21 @@ def create_app(data_dir=None, provider_factory=WebImageProvider, account_inspect
         if body.model not in allowed:
             raise ValueError('不支持此模型别名，请查询 /v1/models')
         prompt = body.prompt
+        ratio = 'Adaptive'
         if body.size and body.size != 'auto':
             if not re.fullmatch(r'\d{1,5}[x:]\d{1,5}', body.size):
                 raise ValueError('size 使用 auto、宽x高或宽:高；只决定宽高比，像素总量固定')
             detail = describe(body.size)
             if not detail:
                 raise ValueError('无法解析 size，请使用 auto、宽x高或宽:高')
-            prompt += f"\n\n输出图片，宽高比为 {detail['ratio']}，目标输出 {detail['width']}×{detail['height']} 像素，不拉伸、不裁切。"
+            # 像素说明必须由 plan() 在画布推断之后追加；直接写进用户提示词会被
+# infer_canvas 误判成用户声明的厘米画布（提示词含「海报/画布」等词时）。
+            if detail['ratio'] in RATIOS:
+                ratio = detail['ratio']
+            else:
+                prompt += f"\n\n输出图片，宽高比为 {detail['ratio']}。"
         client_id = hashlib.sha256(idempotency.encode()).hexdigest() if idempotency else uuid.uuid4().hex
-        batch = await run_in_threadpool(service.submit, BatchRequest(client_id=client_id, prompt=prompt, count=body.n, references=references))
+        batch = await run_in_threadpool(service.submit, BatchRequest(client_id=client_id, prompt=prompt, count=body.n, references=references, ratio=ratio))
         base_url = str(request.base_url).rstrip('/')
         if not body.stream:
             return await api_result(batch['id'], body, base_url)
