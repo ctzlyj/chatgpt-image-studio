@@ -6,6 +6,8 @@ import unicodedata
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 
+from .resolution import NATIVE_PIXEL_BUDGET, native_dimensions, parse_ratio
+
 RATIOS = ['Adaptive', '1:1', '16:9', '21:9', '4:3', '3:2', '5:4', '2:1', '3:4', '2:3', '4:5', '9:16']
 FIDELITY_RULES = [
     '来源图是商品外观的唯一依据，必须保留商品颜色、版型、轮廓、材质、图案、结构、细节、配件、比例和整体设计。',
@@ -29,11 +31,19 @@ class BatchRequest(BaseModel):
     common_references: list[str] = Field(default_factory=list, max_length=3)
     ratio: str = 'Adaptive'
     custom_size: Canvas | None = None
-    image_size: Literal['1K', '2K', '4K'] = '2K'
+    # 已废弃：网页生图的像素总量固定在约 1.57 MP（见 studio/resolution.py 的实测
+    # 证据），1K/2K/4K 档位无法兑现。字段保留仅为兼容旧客户端，取值不再影响结果。
+    image_size: Literal['1K', '2K', '4K'] | None = None
+    # 出图后的显式放大倍数，1 表示只要原生输出。放大结果一律标注为非原生像素。
+    upscale: int = Field(default=1, ge=1, le=4)
     derivative: bool = False
 
 
-def calculate_canvas(canvas: Canvas, image_size='2K'):
+def calculate_canvas(canvas: Canvas, image_size=None):
+    """把厘米画布换算成该平台真实能输出的像素尺寸。
+
+    `image_size` 仅为兼容旧调用而保留，不参与计算：网页生图的像素预算是固定的。
+    """
     integers = []
     for value in [canvas.widthCm, canvas.heightCm]:
         normalized = unicodedata.normalize('NFKC', value).strip()
@@ -50,7 +60,7 @@ def calculate_canvas(canvas: Canvas, image_size='2K'):
     maximum = min(floor(3840 / max(unit_width, unit_height)), floor(sqrt(8294400 / unit_pixels)))
     if minimum > maximum:
         raise ValueError('此尺寸无法精确换算为像素，请调整宽高')
-    target = {'1K': 1048576, '2K': 3145728, '4K': 8294400}[image_size]
+    target = NATIVE_PIXEL_BUDGET
     multiplier = max(minimum, min(maximum, floor(sqrt(target / unit_pixels))))
     return {'width': unit_width * multiplier, 'height': unit_height * multiplier, 'ratio': f'{numerator}:{denominator}'}
 
@@ -122,9 +132,14 @@ def plan(request: BatchRequest, assets: dict):
             effective = '[用户修改要求]\n' + prompt + '\n\n[商品保真规则]\n' + '\n'.join(FIDELITY_RULES)
         canvas = infer_canvas(prompt, request.custom_size)
         if canvas:
-            dimensions = calculate_canvas(canvas, request.image_size)
+            dimensions = calculate_canvas(canvas)
             effective += f"\n\n画布规格：宽{canvas.widthCm}厘米、高{canvas.heightCm}厘米，整张图片宽:高={dimensions['ratio']}，输出{dimensions['width']}×{dimensions['height']}像素。按此画布直接构图，不拉伸、不压扁、不裁切或添加边框凑比例；保留用户全部指定文案，不把画布尺寸当成商品尺寸或新增画面文案。"
         elif request.ratio != 'Adaptive':
-            effective += f'\n\n输出图片，宽高比为 {request.ratio}。'
+            parsed = parse_ratio(request.ratio)
+            if parsed:
+                width, height = native_dimensions(*parsed)
+                effective += f'\n\n输出图片，宽高比为 {request.ratio}，目标输出 {width}×{height} 像素，不拉伸、不裁切。'
+            else:
+                effective += f'\n\n输出图片，宽高比为 {request.ratio}。'
         tasks.append({'index': index, 'prompt': prompt, 'effective_prompt': effective, 'references': references})
     return tasks

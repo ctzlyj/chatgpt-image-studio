@@ -245,20 +245,24 @@ class StudioClient:
             "states": [{"name": item.get("name"), "status": item.get("status"), "quota": item.get("quota")} for item in items],
         }
 
-    def generate(self, prompt: str, count: int, model: str, size: str | None, request_id: str) -> dict:
+    def generate(self, prompt: str, count: int, model: str, size: str | None, upscale: int, request_id: str) -> dict:
         body = {"model": model, "prompt": prompt, "n": count, "response_format": "b64_json", "stream": False}
         if size:
             body["size"] = size
+        if upscale > 1:
+            body["upscale"] = upscale
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json", **self.api_headers(request_id)}
         return self.request("POST", "/v1/images/generations", payload, headers, timeout=930)
 
-    def edit(self, prompt: str, images: list[Path], count: int, model: str, size: str | None, request_id: str) -> dict:
+    def edit(self, prompt: str, images: list[Path], count: int, model: str, size: str | None, upscale: int, request_id: str) -> dict:
         boundary = "----ImageStudio" + uuid.uuid4().hex
         parts: list[bytes] = []
         fields = {"prompt": prompt, "model": model, "n": str(count), "response_format": "b64_json", "stream": "false"}
         if size:
             fields["size"] = size
+        if upscale > 1:
+            fields["upscale"] = str(upscale)
         for key, value in fields.items():
             parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode("utf-8"))
         for path in images:
@@ -356,6 +360,7 @@ def save_images(result: dict, directory: Path, request_id: str) -> dict:
     if not isinstance(items, list) or not items:
         raise StudioError("Image Studio 没有返回图片；请先核对任务历史，不要直接重复提交")
     paths = []
+    deliveries = []
     for index, item in enumerate(items, 1):
         encoded = item.get("b64_json") if isinstance(item, dict) else None
         if not isinstance(encoded, str):
@@ -366,12 +371,23 @@ def save_images(result: dict, directory: Path, request_id: str) -> dict:
             raise StudioError("图片结果无法解码") from error
         if not content.startswith(b"\x89PNG\r\n\x1a\n"):
             raise StudioError("Image Studio 返回了非 PNG 图片")
-        target = directory / f"image-{index:02d}.png"
+        marker = item.get("upscale") if isinstance(item.get("upscale"), dict) else {}
+        suffix = f"-upscaled{marker.get('factor')}x-{marker.get('backend')}" if marker.get("upscaled") else ""
+        target = directory / f"image-{index:02d}{suffix}.png"
         temporary = target.with_suffix(".tmp")
         temporary.write_bytes(content)
         temporary.replace(target)
         paths.append(str(target))
-    return {"ok": True, "request_id": request_id, "batch_id": result.get("batch_id"), "images": paths}
+        delivery = {"path": str(target), "native_size": item.get("native_size"), "size": item.get("size")}
+        if marker.get("upscaled"):
+            delivery["upscale"] = {"factor": marker.get("factor"), "backend": marker.get("backend"), "label": marker.get("label")}
+            if marker.get("fallback"):
+                delivery["upscale"]["fallback"] = marker["fallback"]
+        deliveries.append(delivery)
+    output = {"ok": True, "request_id": request_id, "batch_id": result.get("batch_id"), "images": paths, "deliveries": deliveries}
+    if any("upscale" in item for item in deliveries):
+        output["note"] = "放大件是非原生像素（网页原生尺寸见 native_size），交付时必须说明。"
+    return output
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -394,6 +410,7 @@ def make_parser() -> argparse.ArgumentParser:
         command.add_argument("--count", type=int, default=1, choices=range(1, 5), metavar="1..4")
         command.add_argument("--model", default="gpt-image-2.5")
         command.add_argument("--size")
+        command.add_argument("--upscale", type=int, default=1, choices=range(1, 5), metavar="1..4", help="enlarge after generation; results are not native pixels")
         command.add_argument("--output-dir")
         command.add_argument("--request-id")
         if name == "edit":
@@ -435,12 +452,12 @@ def main() -> int:
             request_id = arguments.request_id or uuid.uuid4().hex
             directory = output_directory(arguments.output_dir)
             if arguments.command == "generate":
-                result = client.generate(prompt, arguments.count, arguments.model, arguments.size, request_id)
+                result = client.generate(prompt, arguments.count, arguments.model, arguments.size, arguments.upscale, request_id)
             else:
                 images = [Path(value).expanduser().resolve() for value in arguments.image]
                 if not 1 <= len(images) <= 12:
                     raise StudioError("参考图数量必须是 1 至 12 张")
-                result = client.edit(prompt, images, arguments.count, arguments.model, arguments.size, request_id)
+                result = client.edit(prompt, images, arguments.count, arguments.model, arguments.size, arguments.upscale, request_id)
             output = save_images(result, directory, request_id)
         print(json.dumps(output, ensure_ascii=False, indent=2))
         return 0

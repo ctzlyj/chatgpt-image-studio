@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowUpRight, Check, ChevronDown, CircleHelp, Copy, Images, Layers, LoaderCircle, Maximize2, Plus, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, Upload, X } from 'lucide-react';
-import { api, ApiError, Asset, Batch, bootstrap, download, Draft, initialDraft, Settings } from './api';
+import { api, ApiError, Asset, Batch, bootstrap, download, Draft, initialDraft, Resolution, Settings } from './api';
 import { Accounts } from './Accounts';
 
 const ratios = ['Adaptive', '1:1', '16:9', '21:9', '4:3', '3:2', '5:4', '2:1', '3:4', '2:3', '4:5', '9:16'];
@@ -27,6 +27,7 @@ export function App() {
   const [preview, setPreview] = useState<string[] | null>(null);
   const [lightbox, setLightbox] = useState<Asset | null>(null);
   const [original, setOriginal] = useState(false);
+  const [resolution, setResolution] = useState<Resolution | null>(null);
   const [pendingId, setPendingId] = useState(() => localStorage.getItem('canvas-pending-id') || '');
   const fileInput = useRef<HTMLInputElement>(null);
   const commonInput = useRef<HTMLInputElement>(null);
@@ -35,6 +36,9 @@ export function App() {
   const running = batches.flatMap(batch => batch.tasks).filter(task => ['running', 'queued'].includes(task.status)).length;
   const patch = (values: Partial<Draft>) => setDraft(previous => ({ ...previous, ...values }));
   const fail = (reason: unknown) => setError(reason instanceof Error ? reason.message : '操作未完成');
+  const nativeSize = resolution?.ratios.find(item => item.ratio === draft.ratio) ?? null;
+  const upscaleLabel = resolution?.upscale.label ?? '算法放大，非原生像素';
+  const upscaleOptions = Array.from({ length: resolution?.upscale.max_factor ?? 4 }, (_, index) => index + 1);
 
   async function refresh() {
     const result = await api<{ items: Batch[] }>('/api/batches');
@@ -43,7 +47,7 @@ export function App() {
     setAssets(Object.fromEntries(items.items.map(item => [item.id, item])));
   }
 
-  useEffect(() => { bootstrap().then(async result => { setSettings(result); await refresh(); }).catch(fail); }, []);
+  useEffect(() => { bootstrap().then(async result => { setSettings(result); setResolution(await api<Resolution>('/api/resolution')); await refresh(); }).catch(fail); }, []);
   useEffect(() => { localStorage.setItem('canvas-draft', JSON.stringify(draft)); }, [draft]);
   useEffect(() => { if (pendingId) localStorage.setItem('canvas-pending-id', pendingId); else localStorage.removeItem('canvas-pending-id'); }, [pendingId]);
   useEffect(() => {
@@ -106,7 +110,7 @@ export function App() {
 
   function editImage(image: Asset) {
     setAssets(values => ({ ...values, [image.id]: image }));
-    setDraft({ ...initialDraft, references: [image.id], derivative: true, custom_size: current?.request.custom_size ?? null, image_size: current?.request.image_size ?? '2K' });
+    setDraft({ ...initialDraft, references: [image.id], derivative: true, custom_size: current?.request.custom_size ?? null, upscale: current?.request.upscale ?? 1 });
     setLightbox(null); promptInput.current?.focus(); setToast('来源图已放入编辑区，请填写修改要求');
   }
 
@@ -149,8 +153,11 @@ export function App() {
         {draft.mode === 'per-image' && <><div className="field-heading"><label>通用参考图 <span>每个任务共用</span></label><small>最多 3 张</small></div>{referenceArea(true)}</>}
         <div className="control-row"><label>画布比例<select value={draft.custom_size ? 'custom' : draft.ratio} onChange={event => event.target.value === 'custom' ? patch({ custom_size: { widthCm: '20', heightCm: '30' }, ratio: 'Adaptive' }) : patch({ ratio: event.target.value, custom_size: null })}>{ratios.map(ratio => <option key={ratio} value={ratio}>{ratio === 'Adaptive' ? '自动 · 不附加尺寸' : ratio}</option>)}<option value="custom">自定义厘米画布</option></select></label>
           {draft.mode === 'count' ? <label>生成数量<select value={draft.count} onChange={event => patch({ count: Number(event.target.value) })}>{Array.from({ length: 10 }, (_, index) => <option key={index} value={index + 1}>{index + 1} 张</option>)}</select></label> : <div className="task-counter"><span>本批任务</span><strong>{draft.mode === 'queue' ? draft.prompt.split('\n').filter(line => line.trim()).length : draft.references.length}<small> 张</small></strong></div>}</div>
-        {draft.custom_size && <div className="canvas-fields"><label>宽 / 厘米<input value={draft.custom_size.widthCm} onChange={event => patch({ custom_size: { ...draft.custom_size!, widthCm: event.target.value } })}/></label><label>高 / 厘米<input value={draft.custom_size.heightCm} onChange={event => patch({ custom_size: { ...draft.custom_size!, heightCm: event.target.value } })}/></label><label>目标像素<select value={draft.image_size} onChange={event => patch({ image_size: event.target.value as Draft['image_size'] })}><option>1K</option><option>2K</option><option>4K</option></select></label></div>}
-        <p className="dimension-note">尺寸仅作为网页提示词要求，不保证精确像素，不拉伸裁切结果。</p>
+        {draft.custom_size && <div className="canvas-fields"><label>宽 / 厘米<input value={draft.custom_size.widthCm} onChange={event => patch({ custom_size: { ...draft.custom_size!, widthCm: event.target.value } })}/></label><label>高 / 厘米<input value={draft.custom_size.heightCm} onChange={event => patch({ custom_size: { ...draft.custom_size!, heightCm: event.target.value } })}/></label></div>}
+        <div className="control-row"><label>交付放大<select value={draft.upscale} onChange={event => patch({ upscale: Number(event.target.value) })}>{upscaleOptions.map(factor => <option key={factor} value={factor}>{factor === 1 ? '不放大 · 原生输出' : `${factor}× 放大`}</option>)}</select></label>
+          <div className="task-counter"><span>{draft.upscale > 1 ? '放大后交付' : '原生输出'}</span><strong>{nativeSize ? `${nativeSize.width * draft.upscale} × ${nativeSize.height * draft.upscale}` : '随画面自适应'}</strong></div></div>
+        <p className="dimension-note">{resolution?.note ?? '网页生图像素总量固定约 1.57 MP，只能改宽高比，不能改总像素。'}{nativeSize && ` 当前 ${nativeSize.ratio} 的原生输出为 ${nativeSize.width} × ${nativeSize.height}。`}</p>
+        {draft.upscale > 1 && <p className="dimension-note">放大 {draft.upscale}× 使用{upscaleLabel}；原生图始终保留，放大件会在文件名中标注。</p>}
         <div className="generate-area"><div className="model-line"><span className="model-icon">G</span><span>ChatGPT 网页生图<small>{settings?.display_model || 'gpt-image-2.5'} · 实际版本未校验</small></span><button aria-label="设置生图模型" onClick={() => setShowSettings(true)}><ChevronDown size={16}/></button></div>
           <button className="generate-button" onClick={submit} disabled={busy || uploading || !draft.prompt.trim() || Boolean(pendingId)}>{busy || uploading ? <LoaderCircle className="spin" size={19}/> : <Sparkles size={19}/>} {uploading ? '正在上传参考图' : busy ? '正在提交' : '开始生成'}<span>{draft.mode === 'count' ? draft.count : draft.mode === 'per-image' ? draft.references.length : draft.prompt.split('\n').filter(line => line.trim()).length} 张</span></button>
           {pendingId && <div className="pending-notice">上次接收状态未确认。<button onClick={resolvePending}>查询回执</button><button onClick={() => { if (confirm('请确认已经检查过网页及历史记录，确实未接收任务。清除此状态后可重新提交，可能产生重复图片。')) setPendingId(''); }}>已核对，清除提示</button></div>}
@@ -170,7 +177,7 @@ export function App() {
     {showSettings && settings && <SettingsDialog settings={settings} close={() => setShowSettings(false)} saved={value => { setSettings(value); setToast('连接设置已保存到本机'); }}/ >}
     {showAccounts && <Accounts close={() => setShowAccounts(false)} saved={setSettings}/>}
     {preview && <div className="overlay" onClick={() => setPreview(null)}><section className="dialog preview-dialog" role="dialog" aria-modal="true" aria-label="发送内容预览" onClick={event => event.stopPropagation()}><div className="dialog-heading"><h2>实际发送的提示词</h2><button aria-label="关闭预览" onClick={() => setPreview(null)}><X/></button></div><p>普通生成只发送你填写的内容；画布与继续修改规则会在这里完整展示。</p>{preview.map((text, index) => <div className="prompt-preview" key={index}><strong>任务 {index + 1}</strong><pre>{text}</pre></div>)}</section></div>}
-    {lightbox && <div className="lightbox" role="dialog" aria-modal="true" aria-label="图片大图"><div className="lightbox-toolbar"><span>{lightbox.width} × {lightbox.height} · {original ? '原尺寸' : '适应窗口'}</span><div><button onClick={() => setOriginal(!original)}>{original ? '适应窗口' : '原尺寸查看'}</button><button onClick={() => download(lightbox.url, '画间-原图.png').catch(fail)}><ArrowDownToLine size={17}/>下载原图</button><button aria-label="关闭大图" onClick={() => setLightbox(null)}><X/></button></div></div><div className={`lightbox-canvas ${original ? 'original' : ''}`}><img src={lightbox.url} alt={lightbox.name} width={original ? lightbox.width : undefined} height={original ? lightbox.height : undefined}/></div></div>}
+    {lightbox && <div className="lightbox" role="dialog" aria-modal="true" aria-label="图片大图"><div className="lightbox-toolbar"><span>{lightbox.width} × {lightbox.height} · {original ? '原尺寸' : '适应窗口'}</span><div><button onClick={() => setOriginal(!original)}>{original ? '适应窗口' : '原尺寸查看'}</button><button onClick={() => download(lightbox.url, '画间-原图.png').catch(fail)}><ArrowDownToLine size={17}/>下载原图</button>{draft.upscale > 1 && <button onClick={() => download(`${lightbox.url}?upscale=${draft.upscale}&download=true`, `画间-放大${draft.upscale}x-非原生像素.png`).catch(fail)}><ArrowDownToLine size={17}/>下载 {draft.upscale}× 放大</button>}<button aria-label="关闭大图" onClick={() => setLightbox(null)}><X/></button></div></div><div className={`lightbox-canvas ${original ? 'original' : ''}`}><img src={lightbox.url} alt={lightbox.name} width={original ? lightbox.width : undefined} height={original ? lightbox.height : undefined}/></div></div>}
   </div>;
 }
 

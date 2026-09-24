@@ -58,3 +58,46 @@ def test_status_is_redacted(monkeypatch):
     assert result['accounts'] == 1
     assert result['ready'] == 1
     assert 'access_token' not in json.dumps(result)
+
+
+def test_upscale_is_only_sent_when_requested(monkeypatch):
+    client = MODULE.StudioClient()
+    observed = {}
+    monkeypatch.setattr(client, 'api_headers', lambda request_id=None: {'Authorization': 'Bearer fixture'})
+
+    def request(method, path, payload=None, headers=None, timeout=30):
+        observed['body'] = json.loads(payload)
+        return {'data': []}
+
+    monkeypatch.setattr(client, 'request', request)
+    client.generate('fixture', 1, 'gpt-image-2.5', '1:1', 1, 'request-fixture')
+    assert 'upscale' not in observed['body']
+    client.generate('fixture', 1, 'gpt-image-2.5', '1:1', 3, 'request-fixture')
+    assert observed['body']['upscale'] == 3
+
+
+def test_enlarged_files_are_labelled_in_name_and_report(tmp_path):
+    image = b'\x89PNG\r\n\x1a\nfixture'
+    encoded = MODULE.base64.b64encode(image).decode()
+    result = MODULE.save_images({
+        'batch_id': 'batch-fixture',
+        'data': [{
+            'b64_json': encoded,
+            'native_size': '1254x1254',
+            'size': '2508x2508',
+            'upscale': {'upscaled': True, 'factor': 2, 'backend': 'lanczos', 'label': '算法放大（Lanczos 重采样 + 轻度锐化），非原生像素'},
+        }],
+    }, tmp_path, 'request-fixture')
+    assert Path(result['images'][0]).name == 'image-01-upscaled2x-lanczos.png'
+    delivery = result['deliveries'][0]
+    assert delivery['native_size'] == '1254x1254' and delivery['size'] == '2508x2508'
+    assert 'AI' not in delivery['upscale']['label']
+    assert '非原生像素' in result['note']
+
+
+def test_native_deliveries_keep_the_plain_name_and_no_upscale_claim(tmp_path):
+    image = b'\x89PNG\r\n\x1a\nfixture'
+    result = MODULE.save_images({'data': [{'b64_json': MODULE.base64.b64encode(image).decode(), 'native_size': '1254x1254', 'size': '1254x1254', 'upscale': {'upscaled': False, 'factor': 1, 'backend': 'native'}}]}, tmp_path, 'request-fixture')
+    assert Path(result['images'][0]).name == 'image-01.png'
+    assert 'upscale' not in result['deliveries'][0]
+    assert 'note' not in result

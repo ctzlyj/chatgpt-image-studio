@@ -18,7 +18,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from .planner import BatchRequest, plan
+from .planner import RATIOS, BatchRequest, plan
+from .resolution import NATIVE_NOTE, NATIVE_PIXEL_BUDGET, describe, table
+from .upscale import capability as upscale_capability, upscale_png
 from .provider import WebImageProvider, public_error
 from .service import StudioService
 from .settings import Settings, SettingsUpdate
@@ -37,6 +39,7 @@ class ImageRequest(BaseModel):
     model: str = 'gpt-image-2.5'
     n: int = Field(default=1, ge=1, le=4)
     size: str | None = None
+    upscale: int = Field(default=1, ge=1, le=4)
     response_format: str = Field(default='b64_json', pattern=r'^(url|b64_json)$')
     stream: bool = False
 
@@ -153,7 +156,17 @@ def create_app(data_dir=None, provider_factory=WebImageProvider, account_inspect
 
     @app.post('/api/plan')
     def preview(body: BatchRequest):
-        return {'tasks': plan(body, store.assets()), 'note': '画布比例和像素为提示词要求，网页不保证精确输出，不会裁切拉伸原图'}
+        return {'tasks': plan(body, store.assets()), 'note': '比例为提示词要求，网页不保证精确输出，不会裁切拉伸原图。' + NATIVE_NOTE}
+
+    @app.get('/api/resolution')
+    def resolution():
+        """网页生图的真实分辨率能力，以及放大能力说明。"""
+        return {
+            'native_pixel_budget': NATIVE_PIXEL_BUDGET,
+            'note': NATIVE_NOTE,
+            'ratios': table([item for item in RATIOS if item != 'Adaptive']),
+            'upscale': upscale_capability(),
+        }
 
     @app.get('/api/assets')
     def list_assets():
@@ -197,10 +210,21 @@ def create_app(data_dir=None, provider_factory=WebImageProvider, account_inspect
         return Response(output.getvalue(), media_type='application/zip', headers={'Content-Disposition': 'attachment; filename="images.zip"'})
 
     @app.get('/files/{filename}')
-    def image_file(filename: str, download: bool = False):
+    def image_file(filename: str, download: bool = False, upscale: int = 1):
         if not re.fullmatch(r'[a-f0-9]{32}\.png', filename) or not (store.images / filename).is_file():
             raise HTTPException(404, '图片不存在')
-        return FileResponse(store.images / filename, media_type='image/png', filename=filename if download else None)
+        if upscale <= 1:
+            return FileResponse(store.images / filename, media_type='image/png', filename=filename if download else None)
+        payload, marker = upscale_png((store.images / filename).read_bytes(), upscale)
+        stem = filename[:-4]
+        headers = {
+            'X-Image-Upscale-Factor': str(marker['factor']),
+            'X-Image-Upscale-Backend': marker['backend'],
+            'X-Image-Native-Size': f"{marker['native_width']}x{marker['native_height']}",
+        }
+        if download:
+            headers['Content-Disposition'] = f'attachment; filename="{stem}-upscaled{marker["factor"]}x-{marker["backend"]}.png"'
+        return Response(payload, media_type='image/png', headers=headers)
 
     @app.get('/v1/models')
     def models():
@@ -220,15 +244,20 @@ def create_app(data_dir=None, provider_factory=WebImageProvider, account_inspect
         for task in batch['tasks']:
             for image in task['results']:
                 item = {'revised_prompt': task['effective_prompt']}
+                native = store.asset_bytes(image['id'])
+                payload, marker = await run_in_threadpool(upscale_png, native, body.upscale)
+                item['native_size'] = f"{marker['native_width']}x{marker['native_height']}"
+                item['size'] = f"{marker['width']}x{marker['height']}"
+                item['upscale'] = marker
                 if body.response_format == 'b64_json':
-                    item['b64_json'] = base64.b64encode(store.asset_bytes(image['id'])).decode('ascii')
+                    item['b64_json'] = base64.b64encode(payload).decode('ascii')
                 else:
-                    item['url'] = base_url + image['url']
+                    item['url'] = base_url + image['url'] + (f'?upscale={body.upscale}' if body.upscale > 1 else '')
                 data.append(item)
         failed = [task for task in batch['tasks'] if task['status'] != 'success']
         if failed:
             raise HTTPException(502, {'error': failed[0]['error'] or '任务未完成', 'batch_id': batch_id, 'completed_images': len(data)})
-        return {'created': int(batch['created']), 'data': data, 'batch_id': batch_id}
+        return {'created': int(batch['created']), 'data': data, 'batch_id': batch_id, 'native_pixel_budget': NATIVE_PIXEL_BUDGET, 'note': NATIVE_NOTE}
 
     async def submit_api(body, request, references, idempotency):
         allowed = {settings.public()['display_model'], 'gpt-image-2', 'gpt-image-2.5', 'gpt-image2.5'}
@@ -236,9 +265,12 @@ def create_app(data_dir=None, provider_factory=WebImageProvider, account_inspect
             raise ValueError('不支持此模型别名，请查询 /v1/models')
         prompt = body.prompt
         if body.size and body.size != 'auto':
-            if not re.fullmatch(r'\d{1,4}[x:]\d{1,4}', body.size):
-                raise ValueError('size 使用 auto、宽x高或宽:高；仅作为提示词要求')
-            prompt += f'\n\n输出图片尺寸要求：{body.size}，不要拉伸或裁切。'
+            if not re.fullmatch(r'\d{1,5}[x:]\d{1,5}', body.size):
+                raise ValueError('size 使用 auto、宽x高或宽:高；只决定宽高比，像素总量固定')
+            detail = describe(body.size)
+            if not detail:
+                raise ValueError('无法解析 size，请使用 auto、宽x高或宽:高')
+            prompt += f"\n\n输出图片，宽高比为 {detail['ratio']}，目标输出 {detail['width']}×{detail['height']} 像素，不拉伸、不裁切。"
         client_id = hashlib.sha256(idempotency.encode()).hexdigest() if idempotency else uuid.uuid4().hex
         batch = await run_in_threadpool(service.submit, BatchRequest(client_id=client_id, prompt=prompt, count=body.n, references=references))
         base_url = str(request.base_url).rstrip('/')
@@ -267,11 +299,11 @@ def create_app(data_dir=None, provider_factory=WebImageProvider, account_inspect
         return await submit_api(body, request, [], idempotency_key)
 
     @app.post('/v1/images/edits')
-    async def api_edit(request: Request, prompt: str = Form(...), model: str = Form(default='gpt-image-2.5'), n: int = Form(default=1), size: str | None = Form(default=None), response_format: str = Form(default='b64_json'), stream: bool = Form(default=False), image: list[UploadFile] | None = File(default=None), image_list: list[UploadFile] | None = File(default=None, alias='image[]'), idempotency_key: str | None = Header(default=None)):
+    async def api_edit(request: Request, prompt: str = Form(...), model: str = Form(default='gpt-image-2.5'), n: int = Form(default=1), size: str | None = Form(default=None), upscale: int = Form(default=1), response_format: str = Form(default='b64_json'), stream: bool = Form(default=False), image: list[UploadFile] | None = File(default=None), image_list: list[UploadFile] | None = File(default=None, alias='image[]'), idempotency_key: str | None = Header(default=None)):
         uploads = [*(image or []), *(image_list or [])]
         if not 1 <= len(uploads) <= 12:
             raise ValueError('编辑需要 1 至 12 张参考图')
-        body = ImageRequest(prompt=prompt, model=model, n=n, size=size, response_format=response_format, stream=stream)
+        body = ImageRequest(prompt=prompt, model=model, n=n, size=size, upscale=upscale, response_format=response_format, stream=stream)
         references = []
         for file in uploads:
             asset = await run_in_threadpool(store.save_asset, await file.read(15 * 1024 * 1024 + 1), file.filename or '参考图')

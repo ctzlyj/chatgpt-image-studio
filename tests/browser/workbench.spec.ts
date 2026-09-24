@@ -213,3 +213,27 @@ test('remote CPA and sub2api configuration lists and imports through the backend
   await page.getByRole('button', { name: /^账号与调度/ }).click();
   await expect(page.getByRole('dialog', { name: '号池管理' })).toBeVisible();
 });
+
+test('the interface states the real output size and labels enlarged deliveries', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('画布比例').selectOption('1:1');
+  await expect(page.locator('.dimension-note').first()).toContainText('1254 × 1254');
+  await expect(page.locator('.control-row').last().locator('.task-counter')).toContainText('1254 × 1254');
+  await expect(page.locator('.control-row').last().locator('.task-counter')).toContainText('原生输出');
+
+  await page.getByLabel('交付放大').selectOption('2');
+  await expect(page.locator('.control-row').last().locator('.task-counter')).toContainText('2508 × 2508');
+  await expect(page.locator('.control-row').last().locator('.task-counter')).toContainText('放大后交付');
+  await expect(page.locator('.dimension-note').last()).toContainText('非原生像素');
+
+  await page.getByLabel('你的提示词').fill('浏览器测试：交付放大标注');
+  await page.getByRole('button', { name: '开始生成' }).click();
+  await expect(page.locator('.result-card.success').first()).toBeVisible();
+  await page.locator('.image-button').first().click();
+  const enlarged = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下载 2× 放大' }).click();
+  expect((await enlarged).suggestedFilename()).toContain('非原生像素');
+  const nativeDownload = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下载原图' }).click();
+  expect((await nativeDownload).suggestedFilename()).toContain('原图');
+});

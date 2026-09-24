@@ -43,8 +43,22 @@ python scripts/image_studio_client.py generate --prompt "一只陶瓷马克杯�
 
 - Use `--model gpt-image-2.5` unless the user explicitly requests a compatible alias.
 - Use `--count 1..4`. Split larger requests into deliberate batches.
-- Treat `--size` as a composition request, not proof of exact output pixels.
+- `--size` only selects the aspect ratio. The web pixel budget is fixed at about 1.57 MP, so `1:1` is `1254×1254` and `16:9` is `1673×941`. Ask `GET /api/resolution` for the current table.
 - Return the absolute paths printed by the client.
+
+## Output size and enlargement
+
+There is **no native 4K on ChatGPT web image generation**. A request such as `--size 3840x2160` keeps the 16:9 ratio and still returns about 1.57 MP; the response reports it as capped rather than fulfilled. Never tell the user a delivery is 4K native.
+
+Use `--upscale 2..4` when the user needs larger files. Enlargement happens after generation and is always labelled:
+
+```powershell
+python scripts/image_studio_client.py generate --prompt "一只陶瓷马克杯，暖白背景，自然光" --size 1:1 --upscale 2 --output-dir "output/cup"
+```
+
+- The client saves enlarged files as `image-01-upscaled2x-<backend>.png` and reports `native_size`, `size` and the backend label per image.
+- The default backend is Lanczos resampling. Call it algorithmic upscaling, never "AI upscaling". Only a `realesrgan` backend in the response is genuine super resolution.
+- Report both the native size and the delivered size to the user, and state that the enlarged file is not native pixels.
 
 For long prompts, save only the non-secret prompt in a task-local file and use `--prompt-file PATH`.
 
